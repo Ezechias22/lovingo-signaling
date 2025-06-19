@@ -196,6 +196,10 @@ async function handleMessage(ws, message) {
       case 'heartbeat':
         handleHeartbeat(ws, message);
         break;
+      // 🚨 NOUVEAU : Gestion des appels
+      case 'initiateCall':
+        await handleInitiateCall(ws, message);
+        break;
       case 'ping':
         sendMessage(ws, {
           type: 'pong',
@@ -480,6 +484,51 @@ async function handleVirtualGift(ws, message) {
   console.log(`🎁 Cadeau ${message.data.giftId} de ${client.userId} dans ${roomId}`);
 }
 
+// 🚨 NOUVELLE FONCTION : Gestion de l'initiation d'appel
+async function handleInitiateCall(ws, message) {
+  const client = clients.get(ws);
+  const { targetUserId, callerName, callType, roomId } = message.data;
+  
+  console.log(`📞 Tentative d'appel de ${client.userId} vers ${targetUserId}`);
+  
+  // Trouver le destinataire connecté
+  const targetClient = findClientByUserId(targetUserId);
+  
+  if (targetClient) {
+    // Envoyer notification d'appel entrant au destinataire
+    sendMessage(targetClient.ws, {
+      type: 'incomingCall',
+      from: 'server',
+      to: targetUserId,
+      data: {
+        callerId: client.userId,
+        callerName: callerName || client.userId,
+        roomId: roomId,
+        callType: callType,
+        timestamp: new Date().toISOString()
+      },
+    });
+    
+    // Confirmer à l'appelant que la notification a été envoyée
+    sendMessage(ws, {
+      type: 'callInitiated',
+      from: 'server',
+      to: client.userId,
+      data: {
+        targetUserId: targetUserId,
+        roomId: roomId,
+        status: 'ringing'
+      },
+    });
+    
+    console.log(`✅ Notification d'appel envoyée à ${targetUserId} de ${client.userId}`);
+  } else {
+    // Utilisateur hors ligne
+    sendError(ws, `Utilisateur ${targetUserId} hors ligne`);
+    console.log(`❌ Utilisateur ${targetUserId} introuvable pour appel`);
+  }
+}
+
 function handleHeartbeat(ws, message) {
   const client = clients.get(ws);
   if (client) {
@@ -558,6 +607,16 @@ function broadcastToRoom(roomId, message, excludeWs = null) {
 function generateClientId() {
   return Math.random().toString(36).substring(2, 15) +
          Math.random().toString(36).substring(2, 15);
+}
+
+// 🚨 NOUVELLE FONCTION : Trouver un client par son userId
+function findClientByUserId(userId) {
+  for (const [ws, client] of clients.entries()) {
+    if (client.userId === userId && ws.readyState === WebSocket.OPEN) {
+      return { ws, client };
+    }
+  }
+  return null;
 }
 
 // =================== KEEP-ALIVE SYSTEM ===================
