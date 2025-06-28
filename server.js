@@ -43,6 +43,10 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Keep-alive endpoints
+app.get('/keepalive', (req, res) => res.status(204).end());
+app.get('/ping', (req, res) => res.json({ pong: Date.now() }));
+
 // Stats détaillées
 app.get('/stats', (req, res) => {
   const roomStats = Array.from(rooms.entries()).map(([id, clients]) => ({
@@ -87,7 +91,9 @@ app.get('/', (req, res) => {
     endpoints: {
       health: '/health',
       stats: '/stats',
-      test: '/test'
+      test: '/test',
+      keepalive: '/keepalive',
+      ping: '/ping'
     }
   });
 });
@@ -196,7 +202,6 @@ async function handleMessage(ws, message) {
       case 'heartbeat':
         handleHeartbeat(ws, message);
         break;
-      // 🚨 NOUVEAU : Gestion des appels
       case 'initiateCall':
         await handleInitiateCall(ws, message);
         break;
@@ -484,7 +489,6 @@ async function handleVirtualGift(ws, message) {
   console.log(`🎁 Cadeau ${message.data.giftId} de ${client.userId} dans ${roomId}`);
 }
 
-// 🚨 NOUVELLE FONCTION : Gestion de l'initiation d'appel
 async function handleInitiateCall(ws, message) {
   const client = clients.get(ws);
   const { targetUserId, callerName, callType, roomId } = message.data;
@@ -609,7 +613,6 @@ function generateClientId() {
          Math.random().toString(36).substring(2, 15);
 }
 
-// 🚨 NOUVELLE FONCTION : Trouver un client par son userId
 function findClientByUserId(userId) {
   for (const [ws, client] of clients.entries()) {
     if (client.userId === userId && ws.readyState === WebSocket.OPEN) {
@@ -621,26 +624,40 @@ function findClientByUserId(userId) {
 
 // =================== KEEP-ALIVE SYSTEM ===================
 
-// Système de keep-alive pour empêcher l'endormissement sur Render.com
+// Système de keep-alive amélioré pour empêcher l'endormissement
 if (process.env.NODE_ENV === 'production') {
-  console.log(`🏥 Activation du keep-alive pour: ${RENDER_URL}`);
+  console.log(`🏥 Activation du keep-alive avancé pour: ${RENDER_URL}`);
   
   setInterval(async () => {
     try {
       const fetch = require('node-fetch');
-      const response = await fetch(`${RENDER_URL}/health`, {
-        timeout: 10000
-      });
+      const endpoints = ['/health', '/ping', '/keepalive', '/', '/test'];
       
-      if (response.ok) {
-        console.log(`🏥 Keep-alive ping réussi: ${response.status}`);
-      } else {
-        console.warn(`⚠️ Keep-alive ping failed: ${response.status}`);
+      for (const endpoint of endpoints) {
+        const url = `${RENDER_URL}${endpoint}`;
+        try {
+          const response = await fetch(url, { timeout: 5000 });
+          console.log(`🏥 Keep-alive ${endpoint}: ${response.status}`);
+        } catch (e) {
+          console.error(`❌ Keep-alive ${endpoint} failed:`, e.message);
+        }
+        await new Promise(resolve => setTimeout(resolve, 2000)); // 2s entre les requêtes
       }
     } catch (error) {
-      console.error('❌ Keep-alive ping failed:', error.message);
+      console.error('❌ Keep-alive system error:', error);
     }
-  }, 14 * 60 * 1000); // Ping toutes les 14 minutes
+  }, 4 * 60 * 1000); // Ping toutes les 4 minutes
+
+  // Ping WebSocket additionnel
+  setInterval(() => {
+    const now = Date.now();
+    wss.clients.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.ping();
+      }
+    });
+    console.log(`♻️ Ping WebSocket envoyé à ${wss.clients.size} clients`);
+  }, 30000); // Toutes les 30 secondes
 }
 
 // =================== CLEANUP & MONITORING ===================
