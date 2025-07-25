@@ -1,7 +1,7 @@
 {
   "name": "webrtc-signaling-server",
-  "version": "1.0.0",
-  "description": "Serveur de signaling WebRTC pour live streaming et appels",
+  "version": "2.0.0",
+  "description": "Serveur WebRTC, site web et API Stripe pour Lovingo",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -16,9 +16,13 @@
     "signaling",
     "websocket",
     "live-streaming",
-    "video-calls"
+    "video-calls",
+    "stripe",
+    "payment",
+    "dating-app",
+    "lovingo"
   ],
-  "author": "Your App Team",
+  "author": "Lovingo Team",
   "license": "MIT",
   "dependencies": {
     "ws": "^8.14.2",
@@ -27,7 +31,10 @@
     "helmet": "^7.0.0",
     "morgan": "^1.10.0",
     "dotenv": "^16.3.1",
-    "uuid": "^9.0.0"
+    "uuid": "^9.0.0",
+    "stripe": "^14.21.0",
+    "node-fetch": "^2.7.0",
+    "path": "^0.12.7"
   },
   "devDependencies": {
     "nodemon": "^3.0.1",
@@ -40,6 +47,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-repo/webrtc-signaling"
+    "url": "https://github.com/Ezechias22/lovingo-signaling"
   }
 }
