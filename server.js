@@ -37,7 +37,7 @@ app.use(express.json({ limit: '10mb' }));
 // Servir les fichiers statiques
 app.use(express.static(path.join(__dirname, 'public')));
 
-// =================== NOUVEAUX ENDPOINTS STRIPE ===================
+// =================== ENDPOINTS STRIPE ===================
 
 app.post('/api/create-payment-intent', async (req, res) => {
   try {
@@ -125,7 +125,7 @@ app.post('/api/purchase-credits', async (req, res) => {
   }
 });
 
-// =================== NOUVELLES PAGES WEB ===================
+// =================== PAGES WEB ===================
 
 // Homepage
 app.get('/', (req, res) => {
@@ -545,7 +545,7 @@ app.get('/', (req, res) => {
   `);
 });
 
-// Page Pricing
+// Page Pricing avec JavaScript corrigé
 app.get('/pricing', (req, res) => {
   res.send(`
 <!DOCTYPE html>
@@ -554,7 +554,6 @@ app.get('/pricing', (req, res) => {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Tarifs - Lovingo</title>
-    <script src="https://js.stripe.com/v3/"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
@@ -832,7 +831,7 @@ app.get('/pricing', (req, res) => {
                 </div>
                 <div class="credit-card">
                     <h4>Ultimate</h4>
-                    <div style="font-size: 1.5rem; font-weight: bold; color: #ff6b9d; margin: 1rem 0;">3700 crédits</div>
+                   <div style="font-size: 1.5rem; font-weight: bold; color: #ff6b9d; margin: 1rem 0;">3700 crédits</div>
                     <div style="color: green; font-size: 0.9rem;">+700 bonus!</div>
                     <div style="font-size: 1.2rem; font-weight: bold;">89.99€</div>
                     <button class="plan-btn" style="margin-top: 1rem;" onclick="handleCreditPurchase('premium', 89.99)">
@@ -844,11 +843,14 @@ app.get('/pricing', (req, res) => {
     </div>
 
     <script>
-        const stripe = Stripe('${process.env.STRIPE_PUBLISHABLE_KEY || 'pk_test_...'}');
+        // JavaScript corrigé pour les paiements
+        console.log('🚀 Script pricing chargé');
         
         async function handleSubscription(planName, price) {
+            console.log('🔄 Tentative abonnement:', planName, price);
+            
             if (price === 0) {
-                alert('Redirection vers l\'inscription gratuite...');
+                alert('Redirection vers inscription gratuite...');
                 return;
             }
             
@@ -859,6 +861,8 @@ app.get('/pricing', (req, res) => {
             }
             
             try {
+                console.log('📡 Envoi requête API...');
+                
                 const response = await fetch('/api/create-payment-intent', {
                     method: 'POST',
                     headers: {
@@ -875,12 +879,21 @@ app.get('/pricing', (req, res) => {
                     }),
                 });
                 
+                console.log('📥 Réponse reçue:', response.status);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error('Erreur HTTP ' + response.status + ': ' + errorText);
+                }
+                
                 const data = await response.json();
-                alert('PaymentIntent créé ! Client Secret: ' + data.clientSecret.substring(0, 20) + '...');
+                console.log('✅ PaymentIntent créé:', data);
+                
+                alert('✅ PaymentIntent créé avec succès!\\nClient Secret: ' + data.clientSecret.substring(0, 20) + '...');
                 
             } catch (error) {
-                alert('Erreur lors du traitement du paiement');
-                console.error('Error:', error);
+                console.error('❌ Erreur:', error);
+                alert('❌ Erreur: ' + error.message);
             } finally {
                 if (button) {
                     button.disabled = false;
@@ -890,7 +903,11 @@ app.get('/pricing', (req, res) => {
         }
         
         async function handleCreditPurchase(packageType, price) {
+            console.log('🔄 Achat crédits:', packageType, price);
+            
             try {
+                console.log('📡 Envoi requête crédits...');
+                
                 const response = await fetch('/api/purchase-credits', {
                     method: 'POST',
                     headers: {
@@ -902,12 +919,21 @@ app.get('/pricing', (req, res) => {
                     }),
                 });
                 
+                console.log('📥 Réponse crédits:', response.status);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error('Erreur HTTP ' + response.status + ': ' + errorText);
+                }
+                
                 const data = await response.json();
-                alert('Package créé ! Client Secret: ' + data.clientSecret.substring(0, 20) + '...');
+                console.log('✅ Package créé:', data);
+                
+                alert('✅ Package créé avec succès!\\nClient Secret: ' + data.clientSecret.substring(0, 20) + '...');
                 
             } catch (error) {
-                alert('Erreur lors du traitement du paiement');
-                console.error('Error:', error);
+                console.error('❌ Erreur crédits:', error);
+                alert('❌ Erreur: ' + error.message);
             }
         }
     </script>
@@ -1379,7 +1405,7 @@ app.get('/support', (req, res) => {
   `);
 });
 
-// =================== VOS ENDPOINTS API EXISTANTS ===================
+// =================== ENDPOINTS API EXISTANTS ===================
 
 // Health check pour Render.com
 app.get('/health', (req, res) => {
@@ -1434,7 +1460,7 @@ app.get('/test', (req, res) => {
   });
 });
 
-// =================== TOUT VOTRE CODE WEBSOCKET EXISTANT ===================
+// =================== TOUTES VOS FONCTIONS WEBSOCKET EXISTANTES ===================
 
 wss.on('connection', (ws, req) => {
   const userAgent = req.headers['user-agent'] || 'Unknown';
@@ -1498,7 +1524,7 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// =================== MESSAGE HANDLERS (votre code existant) ===================
+// =================== MESSAGE HANDLERS ===================
 
 async function handleMessage(ws, message) {
   const client = clients.get(ws);
@@ -1559,9 +1585,6 @@ async function handleMessage(ws, message) {
   }
 }
 
-// Toutes vos autres fonctions handleJoinRoom, handleLeaveRoom, etc. restent identiques...
-// Je vais ajouter les fonctions principales pour que ce soit complet
-
 async function handleJoinRoom(ws, message) {
   const client = clients.get(ws);
   const { roomId, callType, metadata } = message.data || {};
@@ -1621,6 +1644,11 @@ async function handleJoinRoom(ws, message) {
       callType: callType
     },
   });
+
+  // Gestion spéciale pour les lives
+  if (callType === 'live') {
+    await handleLiveRoomJoin(ws, roomId, metadata);
+  }
 
   console.log(`✅ ${client.userId || client.id} a rejoint la room ${roomId} (${room.size} participants)`);
 }
@@ -1686,6 +1714,51 @@ async function handleWebRTCSignaling(ws, message) {
   console.log(`🔄 Signal ${message.type} relayé dans ${roomId} par ${client.userId}`);
 }
 
+async function handleLiveRoomJoin(ws, roomId, metadata) {
+  if (!liveRooms.has(roomId)) {
+    liveRooms.set(roomId, {
+      hostId: metadata?.isHost ? clients.get(ws).userId : null,
+      title: metadata?.title || 'Live Stream',
+      maxGuests: metadata?.maxGuests || 8,
+      guests: new Set(),
+      viewers: new Set(),
+      startTime: new Date(),
+      stats: {
+        totalViewers: 0,
+        peakViewers: 0,
+        totalGifts: 0,
+        totalHearts: 0,
+      },
+    });
+    console.log(`🔴 Nouvelle live room créée: ${roomId}`);
+  }
+
+  const liveRoom = liveRooms.get(roomId);
+
+  if (metadata?.isHost) {
+    liveRoom.hostId = clients.get(ws).userId;
+  } else if (metadata?.isGuest) {
+    liveRoom.guests.add(clients.get(ws).userId);
+  } else {
+    liveRoom.viewers.add(clients.get(ws).userId);
+    liveRoom.stats.totalViewers++;
+    liveRoom.stats.peakViewers = Math.max(liveRoom.stats.peakViewers, liveRoom.viewers.size);
+  }
+
+  // Broadcast stats
+  broadcastToRoom(roomId, {
+    type: 'liveStats',
+    from: 'server',
+    to: roomId,
+    data: {
+      viewerCount: liveRoom.viewers.size,
+      guestCount: liveRoom.guests.size,
+      stats: liveRoom.stats,
+      hostId: liveRoom.hostId
+    },
+  });
+}
+
 async function handleLiveControl(ws, message) {
   const client = clients.get(ws);
   const roomId = client.roomId;
@@ -1695,7 +1768,32 @@ async function handleLiveControl(ws, message) {
     return;
   }
 
-  broadcastToRoom(roomId, message, ws);
+  const liveRoom = liveRooms.get(roomId);
+  const { controlType, data } = message.data;
+
+  switch (controlType) {
+    case 'inviteGuest':
+      if (client.userId === liveRoom.hostId) {
+        broadcastToRoom(roomId, message);
+      } else {
+        sendError(ws, 'Seul l\'hôte peut inviter des invités');
+      }
+      break;
+    case 'acceptInvite':
+      liveRoom.guests.add(data.guestId);
+      broadcastToRoom(roomId, message);
+      break;
+    case 'removeGuest':
+      if (client.userId === liveRoom.hostId) {
+        liveRoom.guests.delete(data.guestId);
+        broadcastToRoom(roomId, message);
+      } else {
+        sendError(ws, 'Seul l\'hôte peut retirer des invités');
+      }
+      break;
+    default:
+      broadcastToRoom(roomId, message, ws);
+  }
 }
 
 async function handleLiveChat(ws, message) {
