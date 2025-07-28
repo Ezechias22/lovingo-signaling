@@ -49,8 +49,8 @@ app.post('/api/create-payment-intent', async (req, res) => {
       });
     }
 
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(amount * 100),
+     const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(amount), // ✅ JUSTE ARRONDIR, PAS MULTIPLIER
       currency: currency.toLowerCase(),
       metadata: {
         app: 'lovingo',
