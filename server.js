@@ -4,6 +4,7 @@ const http = require('http');
 const cors = require('cors');
 const path = require('path');
 const crypto = require('crypto');
+const { AccessToken } = require('livekit-server-sdk');
 
 // Ajout de Stripe
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
@@ -14,7 +15,7 @@ const wss = new WebSocket.Server({
   server,
   clientTracking: true,
   perMessageDeflate: false,
-  maxPayload: 1024 * 1024, // 1MB max payload
+  maxPayload: 1024 * 1024,
 });
 
 // Configuration
@@ -25,11 +26,16 @@ const RENDER_URL =
 const PLAYSTORE_URL =
   'https://play.google.com/store/apps/details?id=com.lovingo2.app&pcampaignid=web_share';
 
+// LiveKit config
+const LIVEKIT_URL = process.env.LIVEKIT_URL || '';
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || '';
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || '';
+
 // État du serveur
 const rooms = new Map();
 const clients = new Map();
 const liveRooms = new Map();
-const liveJoinRequests = new Map(); // roomId -> [{ requestId, userId, message, createdAt, status }]
+const liveJoinRequests = new Map();
 
 // Middleware
 app.use(
@@ -44,9 +50,8 @@ app.use(
     allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id'],
   })
 );
-app.use(express.json({ limit: '10mb' }));
 
-// Servir les fichiers statiques
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // =================== HELPERS ===================
@@ -146,6 +151,46 @@ function ensureLiveRoom(roomId) {
   }
 
   return liveRooms.get(roomId);
+}
+
+function requireLiveKitConfig() {
+  if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+    throw new Error(
+      'LIVEKIT_URL, LIVEKIT_API_KEY ou LIVEKIT_API_SECRET manquant dans les variables d’environnement'
+    );
+  }
+}
+
+async function createLiveKitToken({
+  roomId,
+  identity,
+  name,
+  role = 'audience',
+}) {
+  requireLiveKitConfig();
+
+  const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+    identity,
+    name,
+    ttl: '2h',
+  });
+
+  const canPublish = role === 'host' || role === 'guest';
+
+  at.addGrant({
+    room: roomId,
+    roomJoin: true,
+    canPublish,
+    canSubscribe: true,
+    canPublishData: true,
+  });
+
+  const token = await at.toJwt();
+
+  return {
+    token,
+    url: LIVEKIT_URL,
+  };
 }
 
 // =================== ENDPOINTS STRIPE ===================
@@ -1391,6 +1436,9 @@ app.get('/live/health', (req, res) => {
     status: 'OK',
     liveRooms: liveRooms.size,
     liveJoinRequests: liveJoinRequests.size,
+    livekitConfigured: Boolean(
+      LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET
+    ),
     timestamp: new Date().toISOString(),
   });
 });
@@ -1474,7 +1522,7 @@ app.get('/live/rooms/:roomId', async (req, res) => {
 app.post('/live/rooms/:roomId/token', async (req, res) => {
   try {
     const { roomId } = req.params;
-    const { role = 'audience' } = req.body || {};
+    const { role = 'audience', userName } = req.body || {};
     const userId =
       getUserIdFromRequest(req) || req.body.userId || `${role}_${Date.now()}`;
 
@@ -1483,27 +1531,33 @@ app.post('/live/rooms/:roomId/token', async (req, res) => {
       return res.status(404).json({ error: 'Room introuvable' });
     }
 
-    const mockToken = Buffer.from(
-      JSON.stringify({
-        roomId,
-        userId,
-        role,
-        ts: Date.now(),
-      })
-    ).toString('base64url');
+    const safeRole = ['host', 'guest', 'audience'].includes(role)
+      ? role
+      : 'audience';
+
+    const identity = String(userId);
+    const displayName = userName || identity;
+
+    const tokenData = await createLiveKitToken({
+      roomId,
+      identity,
+      name: displayName,
+      role: safeRole,
+    });
 
     res.json({
       roomId,
-      token: mockToken,
-      role,
-      userId,
-      livekitUrl: process.env.LIVEKIT_URL || null,
-      note: 'Token mock. Remplace cette logique par une vraie signature LiveKit.',
+      role: safeRole,
+      userId: identity,
+      userName: displayName,
+      token: tokenData.token,
+      url: tokenData.url,
+      livekitUrl: tokenData.url,
     });
   } catch (error) {
     console.error('❌ Erreur get room token:', error);
     res.status(500).json({
-      error: 'Impossible de générer le token',
+      error: 'Impossible de générer le token LiveKit',
       details: error.message,
     });
   }
@@ -1828,7 +1882,9 @@ wss.on('connection', (ws, req) => {
     req.headers['x-forwarded-for'] ||
     'Unknown';
 
-  console.log(`📱 Nouvelle connexion: ${clientIP} (${userAgent.substring(0, 50)})`);
+  console.log(
+    `📱 Nouvelle connexion: ${clientIP} (${userAgent.substring(0, 50)})`
+  );
 
   const clientInfo = {
     id: generateClientId(),
@@ -1879,7 +1935,7 @@ wss.on('connection', (ws, req) => {
     data: {
       clientId: clientInfo.id,
       serverTime: new Date().toISOString(),
-      version: '2.0.0',
+      version: '2.1.0',
     },
   });
 });
@@ -1890,7 +1946,9 @@ async function handleMessage(ws, message) {
   const client = clients.get(ws);
   if (!client) return;
 
-  console.log(`📨 Message reçu: ${message.type} de ${message.from || 'anonymous'}`);
+  console.log(
+    `📨 Message reçu: ${message.type} de ${message.from || 'anonymous'}`
+  );
 
   if (message.from && message.from !== 'server') {
     client.userId = message.from;
@@ -2063,7 +2121,9 @@ async function handleWebRTCSignaling(ws, message) {
   };
 
   broadcastToRoom(roomId, enrichedMessage, ws);
-  console.log(`🔄 Signal ${message.type} relayé dans ${roomId} par ${client.userId}`);
+  console.log(
+    `🔄 Signal ${message.type} relayé dans ${roomId} par ${client.userId}`
+  );
 }
 
 async function handleLiveRoomJoin(ws, roomId, metadata) {
@@ -2345,7 +2405,7 @@ setInterval(() => {
 
 server.listen(PORT, () => {
   console.log('🚀 ===============================================');
-  console.log('🚀 Serveur Lovingo Complet v2.1.0');
+  console.log('🚀 Serveur Lovingo Complet v2.2.0');
   console.log(`🚀 Port: ${PORT}`);
   console.log(`🚀 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🚀 WebSocket: ws://localhost:${PORT}`);
@@ -2356,6 +2416,14 @@ server.listen(PORT, () => {
   console.log(`🚀 Live Health: ${RENDER_URL}/live/health`);
   console.log(`🚀 Stats: ${RENDER_URL}/stats`);
   console.log(`🚀 Play Store: ${PLAYSTORE_URL}`);
+  console.log(
+    `🚀 LiveKit configuré: ${
+      LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET ? 'OUI' : 'NON'
+    }`
+  );
+  if (LIVEKIT_URL) {
+    console.log(`🚀 LiveKit URL: ${LIVEKIT_URL}`);
+  }
   console.log('🚀 ===============================================');
 });
 
