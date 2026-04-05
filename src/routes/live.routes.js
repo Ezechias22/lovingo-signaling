@@ -41,14 +41,28 @@ function safeNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function buildUniqueParticipantIdentity({
+  userId,
+  role,
+  roomId,
+  deviceId,
+}) {
+  const safeUserId = safeString(String(userId || 'user'));
+  const safeRole = safeString(String(role || 'audience'));
+  const safeRoomId = safeString(String(roomId || 'room'));
+  const safeDeviceId =
+    safeString(String(deviceId || '')) || crypto.randomUUID();
+
+  return `${safeUserId}::${safeRole}::${safeRoomId}::${safeDeviceId}`;
+}
+
 function getRoomViewerCount(room) {
   if (!room) return 0;
 
   const liveViewers = room.viewers instanceof Set ? room.viewers.size : 0;
   const liveGuests = room.guests instanceof Set ? room.guests.size : 0;
-  const peak = safeNumber(room?.stats?.peakViewers, 0);
 
-  return Math.max(liveViewers + liveGuests, peak > 0 ? liveViewers + liveGuests : 0);
+  return liveViewers + liveGuests + 1; // + host
 }
 
 function serializeRoom(room) {
@@ -64,7 +78,6 @@ function serializeRoom(room) {
     isActive: safeBoolean(room.isActive, true),
     createdAt: toIsoDate(room.startTime),
 
-    // Compatibilité Flutter premium discovery
     livekitRoomName: room.livekitRoomName || room.roomId,
     hostUsername: room.hostUsername || room.hostId,
     hostPhotoUrl: room.hostPhotoUrl || null,
@@ -74,15 +87,11 @@ function serializeRoom(room) {
     isTrending: safeBoolean(room.isTrending, false),
     isNew: safeBoolean(room.isNew, false),
 
-    // Infos utiles backend / détails room
     guestCount,
     requestCount,
     stats: {
       totalViewers: safeNumber(room?.stats?.totalViewers, viewerCount),
-      peakViewers: safeNumber(
-        room?.stats?.peakViewers,
-        viewerCount
-      ),
+      peakViewers: safeNumber(room?.stats?.peakViewers, viewerCount),
       totalGifts: safeNumber(room?.stats?.totalGifts, 0),
       totalHearts: safeNumber(room?.stats?.totalHearts, 0),
     },
@@ -101,10 +110,6 @@ router.get('/live/health', (req, res) => {
   });
 });
 
-/**
- * LISTER LES LIVES ACTIFS
- * Route attendue par Flutter: GET /live/rooms
- */
 router.get('/live/rooms', async (req, res) => {
   try {
     const rooms = Array.from(liveRooms.values())
@@ -142,8 +147,6 @@ router.post('/live/rooms', async (req, res) => {
     const {
       title = 'Live Lovingo',
       maxGuests = 20,
-
-      // Nouveaux champs premium supportés
       hostUsername,
       hostPhotoUrl,
       thumbnailUrl,
@@ -156,26 +159,23 @@ router.post('/live/rooms', async (req, res) => {
 
     const room = {
       roomId,
-      hostId: userId,
+      hostId: String(userId),
       title: safeString(title, 'Live Lovingo'),
       maxGuests: Number(maxGuests) > 0 ? Number(maxGuests) : 20,
-
-      // Champs pour discovery premium
       livekitRoomName: roomId,
-      hostUsername: safeString(hostUsername, safeString(userId, 'Host')),
+      hostUsername: safeString(hostUsername, String(userId)),
       hostPhotoUrl: safeString(hostPhotoUrl) || null,
       thumbnailUrl: safeString(thumbnailUrl) || null,
       category: safeString(category) || null,
       isTrending: safeBoolean(isTrending, false),
       isNew: safeBoolean(isNew, true),
-
       guests: new Set(),
       viewers: new Set(),
       requests: new Set(),
       startTime: new Date(),
       stats: {
-        totalViewers: 0,
-        peakViewers: 0,
+        totalViewers: 1,
+        peakViewers: 1,
         totalGifts: 0,
         totalHearts: 0,
       },
@@ -219,9 +219,16 @@ router.get('/live/rooms/:roomId', async (req, res) => {
 router.post('/live/rooms/:roomId/token', async (req, res) => {
   try {
     const { roomId } = req.params;
-    const { role = 'audience', userName } = req.body || {};
-    const userId =
-      getUserIdFromRequest(req) || req.body.userId || `${role}_${Date.now()}`;
+    const {
+      role = 'audience',
+      userName,
+      userId: bodyUserId,
+      photoUrl,
+      deviceId,
+    } = req.body || {};
+
+    const authUserId = getUserIdFromRequest(req);
+    const userId = authUserId || bodyUserId || `${role}_${Date.now()}`;
 
     const room = liveRooms.get(roomId);
     if (!room) {
@@ -232,19 +239,29 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
       ? role
       : 'audience';
 
-    const identity = String(userId);
-    const displayName = userName || identity;
+    const realUserId = String(userId);
+    const displayName = safeString(
+      userName,
+      safeRole === 'host' ? room.hostUsername || realUserId : realUserId
+    );
 
-    // Mise à jour légère des stats mémoire
+    const uniqueIdentity = buildUniqueParticipantIdentity({
+      userId: realUserId,
+      role: safeRole,
+      roomId,
+      deviceId,
+    });
+
     if (safeRole === 'audience') {
-      room.viewers.add(identity);
+      room.viewers.add(uniqueIdentity);
     } else if (safeRole === 'guest') {
-      room.guests.add(identity);
+      room.guests.add(uniqueIdentity);
     }
 
     const currentLiveCount =
       (room.viewers instanceof Set ? room.viewers.size : 0) +
-      (room.guests instanceof Set ? room.guests.size : 0);
+      (room.guests instanceof Set ? room.guests.size : 0) +
+      1;
 
     room.stats.totalViewers = Math.max(
       safeNumber(room?.stats?.totalViewers, 0),
@@ -257,15 +274,24 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
 
     const tokenData = await createLiveKitToken({
       roomId,
-      identity,
+      identity: uniqueIdentity,
       name: displayName,
       role: safeRole,
+      metadata: {
+        userId: realUserId,
+        userName: displayName,
+        photoUrl:
+          photoUrl ||
+          (safeRole === 'host' ? room.hostPhotoUrl || null : null),
+        role: safeRole,
+      },
     });
 
     return res.status(200).json({
       roomId,
       role: safeRole,
-      userId: identity,
+      userId: realUserId,
+      participantIdentity: uniqueIdentity,
       userName: displayName,
       token: tokenData.token,
       url: tokenData.url,
