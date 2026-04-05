@@ -11,6 +11,84 @@ const {
 
 const router = express.Router();
 
+function toIsoDate(value) {
+  if (!value) return new Date().toISOString();
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return new Date().toISOString();
+  }
+
+  return parsed.toISOString();
+}
+
+function safeString(value, fallback = '') {
+  if (typeof value !== 'string') return fallback;
+  return value.trim();
+}
+
+function safeBoolean(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  return fallback;
+}
+
+function safeNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function getRoomViewerCount(room) {
+  if (!room) return 0;
+
+  const liveViewers = room.viewers instanceof Set ? room.viewers.size : 0;
+  const liveGuests = room.guests instanceof Set ? room.guests.size : 0;
+  const peak = safeNumber(room?.stats?.peakViewers, 0);
+
+  return Math.max(liveViewers + liveGuests, peak > 0 ? liveViewers + liveGuests : 0);
+}
+
+function serializeRoom(room) {
+  const viewerCount = getRoomViewerCount(room);
+  const requestCount = room.requests instanceof Set ? room.requests.size : 0;
+  const guestCount = room.guests instanceof Set ? room.guests.size : 0;
+
+  return {
+    roomId: room.roomId,
+    hostId: room.hostId,
+    title: room.title || 'Live Lovingo',
+    maxGuests: safeNumber(room.maxGuests, 20),
+    isActive: safeBoolean(room.isActive, true),
+    createdAt: toIsoDate(room.startTime),
+
+    // Compatibilité Flutter premium discovery
+    livekitRoomName: room.livekitRoomName || room.roomId,
+    hostUsername: room.hostUsername || room.hostId,
+    hostPhotoUrl: room.hostPhotoUrl || null,
+    viewerCount,
+    thumbnailUrl: room.thumbnailUrl || null,
+    category: room.category || null,
+    isTrending: safeBoolean(room.isTrending, false),
+    isNew: safeBoolean(room.isNew, false),
+
+    // Infos utiles backend / détails room
+    guestCount,
+    requestCount,
+    stats: {
+      totalViewers: safeNumber(room?.stats?.totalViewers, viewerCount),
+      peakViewers: safeNumber(
+        room?.stats?.peakViewers,
+        viewerCount
+      ),
+      totalGifts: safeNumber(room?.stats?.totalGifts, 0),
+      totalHearts: safeNumber(room?.stats?.totalHearts, 0),
+    },
+  };
+}
+
 router.get('/live/health', (req, res) => {
   res.status(200).json({
     status: 'OK',
@@ -23,18 +101,74 @@ router.get('/live/health', (req, res) => {
   });
 });
 
+/**
+ * LISTER LES LIVES ACTIFS
+ * Route attendue par Flutter: GET /live/rooms
+ */
+router.get('/live/rooms', async (req, res) => {
+  try {
+    const rooms = Array.from(liveRooms.values())
+      .filter((room) => room && room.isActive !== false)
+      .map(serializeRoom)
+      .sort((a, b) => {
+        const aTrending = a.isTrending ? 1 : 0;
+        const bTrending = b.isTrending ? 1 : 0;
+
+        if (bTrending !== aTrending) {
+          return bTrending - aTrending;
+        }
+
+        if (b.viewerCount !== a.viewerCount) {
+          return b.viewerCount - a.viewerCount;
+        }
+
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+
+    return res.status(200).json(rooms);
+  } catch (error) {
+    console.error('❌ Erreur get active live rooms:', error);
+    return res.status(500).json({
+      error: 'Impossible de récupérer les lives actifs',
+      details: error.message,
+    });
+  }
+});
+
 router.post('/live/rooms', async (req, res) => {
   try {
     const userId = getUserIdFromRequest(req) || req.body.hostId || 'host_demo';
-    const { title = 'Live Lovingo', maxGuests = 20 } = req.body || {};
+
+    const {
+      title = 'Live Lovingo',
+      maxGuests = 20,
+
+      // Nouveaux champs premium supportés
+      hostUsername,
+      hostPhotoUrl,
+      thumbnailUrl,
+      category,
+      isTrending = false,
+      isNew = true,
+    } = req.body || {};
 
     const roomId = crypto.randomUUID();
 
     const room = {
       roomId,
       hostId: userId,
-      title,
+      title: safeString(title, 'Live Lovingo'),
       maxGuests: Number(maxGuests) > 0 ? Number(maxGuests) : 20,
+
+      // Champs pour discovery premium
+      livekitRoomName: roomId,
+      hostUsername: safeString(hostUsername, safeString(userId, 'Host')),
+      hostPhotoUrl: safeString(hostPhotoUrl) || null,
+      thumbnailUrl: safeString(thumbnailUrl) || null,
+      category: safeString(category) || null,
+      isTrending: safeBoolean(isTrending, false),
+      isNew: safeBoolean(isNew, true),
+
       guests: new Set(),
       viewers: new Set(),
       requests: new Set(),
@@ -53,17 +187,10 @@ router.post('/live/rooms', async (req, res) => {
 
     console.log(`🔴 Live room créée: ${roomId} par ${userId}`);
 
-    res.status(201).json({
-      roomId,
-      hostId: userId,
-      title,
-      maxGuests: room.maxGuests,
-      isActive: true,
-      createdAt: room.startTime.toISOString(),
-    });
+    return res.status(201).json(serializeRoom(room));
   } catch (error) {
     console.error('❌ Erreur create live room:', error);
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Impossible de créer la room live',
       details: error.message,
     });
@@ -79,20 +206,10 @@ router.get('/live/rooms/:roomId', async (req, res) => {
       return res.status(404).json({ error: 'Room introuvable' });
     }
 
-    res.json({
-      roomId: room.roomId,
-      hostId: room.hostId,
-      title: room.title,
-      maxGuests: room.maxGuests,
-      isActive: room.isActive,
-      createdAt: room.startTime?.toISOString?.() || new Date().toISOString(),
-      viewerCount: room.viewers.size,
-      guestCount: room.guests.size,
-      stats: room.stats,
-    });
+    return res.status(200).json(serializeRoom(room));
   } catch (error) {
     console.error('❌ Erreur get room:', error);
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Impossible de récupérer la room',
       details: error.message,
     });
@@ -118,6 +235,26 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
     const identity = String(userId);
     const displayName = userName || identity;
 
+    // Mise à jour légère des stats mémoire
+    if (safeRole === 'audience') {
+      room.viewers.add(identity);
+    } else if (safeRole === 'guest') {
+      room.guests.add(identity);
+    }
+
+    const currentLiveCount =
+      (room.viewers instanceof Set ? room.viewers.size : 0) +
+      (room.guests instanceof Set ? room.guests.size : 0);
+
+    room.stats.totalViewers = Math.max(
+      safeNumber(room?.stats?.totalViewers, 0),
+      currentLiveCount
+    );
+    room.stats.peakViewers = Math.max(
+      safeNumber(room?.stats?.peakViewers, 0),
+      currentLiveCount
+    );
+
     const tokenData = await createLiveKitToken({
       roomId,
       identity,
@@ -125,7 +262,7 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
       role: safeRole,
     });
 
-    res.json({
+    return res.status(200).json({
       roomId,
       role: safeRole,
       userId: identity,
@@ -136,7 +273,7 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Erreur get room token:', error);
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Impossible de générer le token LiveKit',
       details: error.message,
     });
@@ -171,8 +308,11 @@ router.post('/live/rooms/:roomId/requests', async (req, res) => {
     const requestId = crypto.randomUUID();
     const joinRequest = {
       requestId,
+      roomId,
       userId,
-      message,
+      userName: req.body?.userName || userId,
+      photoUrl: req.body?.photoUrl || null,
+      message: safeString(message),
       createdAt: new Date().toISOString(),
       status: 'pending',
     };
@@ -191,7 +331,7 @@ router.post('/live/rooms/:roomId/requests', async (req, res) => {
 
     console.log(`🙋 Join request: ${userId} -> ${roomId}`);
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       requestId,
       roomId,
@@ -200,7 +340,7 @@ router.post('/live/rooms/:roomId/requests', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Erreur requestToJoin:', error);
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Impossible d’envoyer la demande',
       details: error.message,
     });
@@ -216,13 +356,13 @@ router.get('/live/rooms/:roomId/requests', async (req, res) => {
     }
 
     const requests = liveJoinRequests.get(roomId) || [];
-    res.json({
+    return res.status(200).json({
       roomId,
       requests,
     });
   } catch (error) {
     console.error('❌ Erreur list requests:', error);
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Impossible de récupérer les demandes',
       details: error.message,
     });
@@ -261,7 +401,7 @@ router.post('/live/rooms/:roomId/requests/:requestId/accept', async (req, res) =
 
     console.log(`✅ Demande acceptée: ${request.userId} dans ${roomId}`);
 
-    res.json({
+    return res.status(200).json({
       success: true,
       roomId,
       requestId,
@@ -270,7 +410,7 @@ router.post('/live/rooms/:roomId/requests/:requestId/accept', async (req, res) =
     });
   } catch (error) {
     console.error('❌ Erreur accept request:', error);
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Impossible d’accepter la demande',
       details: error.message,
     });
@@ -308,7 +448,7 @@ router.post('/live/rooms/:roomId/requests/:requestId/reject', async (req, res) =
 
     console.log(`❌ Demande rejetée: ${request.userId} dans ${roomId}`);
 
-    res.json({
+    return res.status(200).json({
       success: true,
       roomId,
       requestId,
@@ -317,7 +457,7 @@ router.post('/live/rooms/:roomId/requests/:requestId/reject', async (req, res) =
     });
   } catch (error) {
     console.error('❌ Erreur reject request:', error);
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Impossible de rejeter la demande',
       details: error.message,
     });
@@ -347,7 +487,7 @@ router.post('/live/rooms/:roomId/moderation/mute', async (req, res) => {
       },
     });
 
-    res.json({
+    return res.status(200).json({
       success: true,
       roomId,
       userId,
@@ -355,7 +495,7 @@ router.post('/live/rooms/:roomId/moderation/mute', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Erreur mute user:', error);
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Impossible de mute user',
       details: error.message,
     });
@@ -387,7 +527,7 @@ router.post('/live/rooms/:roomId/moderation/kick', async (req, res) => {
       data: { userId },
     });
 
-    res.json({
+    return res.status(200).json({
       success: true,
       roomId,
       userId,
@@ -395,7 +535,7 @@ router.post('/live/rooms/:roomId/moderation/kick', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Erreur kick user:', error);
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Impossible de kick user',
       details: error.message,
     });
