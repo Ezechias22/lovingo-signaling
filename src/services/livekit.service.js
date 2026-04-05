@@ -5,9 +5,6 @@ const {
   LIVEKIT_API_SECRET,
 } = require('../config');
 
-/**
- * Vérifie que LiveKit est correctement configuré
- */
 function requireLiveKitConfig() {
   if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
     throw new Error(
@@ -16,9 +13,12 @@ function requireLiveKitConfig() {
   }
 }
 
-/**
- * Génère un token LiveKit sécurisé avec metadata utilisateur
- */
+function safeString(value, fallback = '') {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  return trimmed || fallback;
+}
+
 async function createLiveKitToken({
   roomId,
   identity,
@@ -28,18 +28,45 @@ async function createLiveKitToken({
 }) {
   requireLiveKitConfig();
 
-  // Sécurisation du rôle
   const safeRole = ['host', 'guest', 'audience'].includes(role)
     ? role
     : 'audience';
 
+  const safeIdentity = safeString(String(identity || 'participant'));
+  const safeName = safeString(String(name || safeIdentity));
+
+  const realUserId = safeString(
+    String(metadata.userId || ''),
+    safeIdentity
+  );
+
+  const realUserName = safeString(
+    String(metadata.userName || metadata.displayName || ''),
+    safeName
+  );
+
+  const photoUrl = safeString(String(metadata.photoUrl || ''), '') || null;
+
   const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
-    identity: String(identity),
-    name: String(name || identity),
+    identity: safeIdentity,
+    name: safeName,
     ttl: '2h',
+    metadata: JSON.stringify({
+      userId: realUserId,
+      userName: realUserName,
+      username: realUserName,
+      displayName: realUserName,
+      photoUrl,
+      avatar: photoUrl,
+      role: safeRole,
+      isHost: safeRole === 'host',
+      isGuest: safeRole === 'guest',
+      isAudience: safeRole === 'audience',
+      isVerified: metadata.isVerified === true,
+      level: Number(metadata.level) || 1,
+    }),
   });
 
-  // 🎯 Permissions selon rôle
   const canPublish = safeRole === 'host' || safeRole === 'guest';
 
   at.addGrant({
@@ -48,24 +75,6 @@ async function createLiveKitToken({
     canPublish,
     canSubscribe: true,
     canPublishData: true,
-  });
-
-  // 🔥 METADATA → ULTRA IMPORTANT POUR TON UI FLUTTER
-  at.metadata = JSON.stringify({
-    userId: String(identity),
-    userName: String(name || identity),
-    role: safeRole,
-
-    // 👇 Infos enrichies pour UI
-    photoUrl: metadata.photoUrl || null,
-    bio: metadata.bio || null,
-    isHost: safeRole === 'host',
-    isGuest: safeRole === 'guest',
-    isAudience: safeRole === 'audience',
-
-    // 👇 pour futur features (gifts, badges, etc)
-    isVerified: metadata.isVerified || false,
-    level: metadata.level || 1,
   });
 
   const token = await at.toJwt();

@@ -28,7 +28,14 @@ function toIsoDate(value) {
 
 function safeString(value, fallback = '') {
   if (typeof value !== 'string') return fallback;
-  return value.trim();
+  const trimmed = value.trim();
+  return trimmed || fallback;
+}
+
+function safeNullableString(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
 }
 
 function safeBoolean(value, fallback = false) {
@@ -62,7 +69,7 @@ function getRoomViewerCount(room) {
   const liveViewers = room.viewers instanceof Set ? room.viewers.size : 0;
   const liveGuests = room.guests instanceof Set ? room.guests.size : 0;
 
-  return liveViewers + liveGuests + 1; // + host
+  return liveViewers + liveGuests + 1;
 }
 
 function serializeRoom(room) {
@@ -147,8 +154,14 @@ router.post('/live/rooms', async (req, res) => {
     const {
       title = 'Live Lovingo',
       maxGuests = 20,
+
+      // accepte les deux variantes
       hostUsername,
+      userName,
+
       hostPhotoUrl,
+      photoUrl,
+
       thumbnailUrl,
       category,
       isTrending = false,
@@ -157,16 +170,25 @@ router.post('/live/rooms', async (req, res) => {
 
     const roomId = crypto.randomUUID();
 
+    const resolvedHostUsername = safeString(
+      hostUsername || userName,
+      String(userId)
+    );
+
+    const resolvedHostPhotoUrl = safeNullableString(
+      hostPhotoUrl || photoUrl
+    );
+
     const room = {
       roomId,
       hostId: String(userId),
       title: safeString(title, 'Live Lovingo'),
       maxGuests: Number(maxGuests) > 0 ? Number(maxGuests) : 20,
       livekitRoomName: roomId,
-      hostUsername: safeString(hostUsername, String(userId)),
-      hostPhotoUrl: safeString(hostPhotoUrl) || null,
-      thumbnailUrl: safeString(thumbnailUrl) || null,
-      category: safeString(category) || null,
+      hostUsername: resolvedHostUsername,
+      hostPhotoUrl: resolvedHostPhotoUrl,
+      thumbnailUrl: safeNullableString(thumbnailUrl),
+      category: safeNullableString(category),
       isTrending: safeBoolean(isTrending, false),
       isNew: safeBoolean(isNew, true),
       guests: new Set(),
@@ -240,10 +262,15 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
       : 'audience';
 
     const realUserId = String(userId);
+
     const displayName = safeString(
       userName,
       safeRole === 'host' ? room.hostUsername || realUserId : realUserId
     );
+
+    const resolvedPhotoUrl =
+      safeNullableString(photoUrl) ||
+      (safeRole === 'host' ? room.hostPhotoUrl || null : null);
 
     const uniqueIdentity = buildUniqueParticipantIdentity({
       userId: realUserId,
@@ -280,9 +307,8 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
       metadata: {
         userId: realUserId,
         userName: displayName,
-        photoUrl:
-          photoUrl ||
-          (safeRole === 'host' ? room.hostPhotoUrl || null : null),
+        displayName,
+        photoUrl: resolvedPhotoUrl,
         role: safeRole,
       },
     });
@@ -293,6 +319,7 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
       userId: realUserId,
       participantIdentity: uniqueIdentity,
       userName: displayName,
+      photoUrl: resolvedPhotoUrl,
       token: tokenData.token,
       url: tokenData.url,
       livekitUrl: tokenData.url,
@@ -309,7 +336,7 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
 router.post('/live/rooms/:roomId/requests', async (req, res) => {
   try {
     const { roomId } = req.params;
-    const { message = '' } = req.body || {};
+    const { message = '', userName, photoUrl } = req.body || {};
     const userId =
       getUserIdFromRequest(req) || req.body.userId || `guest_${Date.now()}`;
 
@@ -335,9 +362,9 @@ router.post('/live/rooms/:roomId/requests', async (req, res) => {
     const joinRequest = {
       requestId,
       roomId,
-      userId,
-      userName: req.body?.userName || userId,
-      photoUrl: req.body?.photoUrl || null,
+      userId: String(userId),
+      userName: safeString(userName, String(userId)),
+      photoUrl: safeNullableString(photoUrl),
       message: safeString(message),
       createdAt: new Date().toISOString(),
       status: 'pending',
@@ -346,7 +373,7 @@ router.post('/live/rooms/:roomId/requests', async (req, res) => {
     requests.push(joinRequest);
     liveJoinRequests.set(roomId, requests);
 
-    room.requests.add(userId);
+    room.requests.add(String(userId));
 
     broadcastToRoom(roomId, {
       type: 'liveJoinRequest',
@@ -361,7 +388,7 @@ router.post('/live/rooms/:roomId/requests', async (req, res) => {
       success: true,
       requestId,
       roomId,
-      userId,
+      userId: String(userId),
       status: 'pending',
     });
   } catch (error) {
@@ -412,7 +439,6 @@ router.post('/live/rooms/:roomId/requests/:requestId/accept', async (req, res) =
     }
 
     request.status = 'accepted';
-    room.guests.add(request.userId);
     room.requests.delete(request.userId);
 
     broadcastToRoom(roomId, {
@@ -422,6 +448,9 @@ router.post('/live/rooms/:roomId/requests/:requestId/accept', async (req, res) =
       data: {
         requestId,
         userId: request.userId,
+        userName: request.userName || request.userId,
+        photoUrl: request.photoUrl || null,
+        roomId,
       },
     });
 
@@ -469,6 +498,7 @@ router.post('/live/rooms/:roomId/requests/:requestId/reject', async (req, res) =
       data: {
         requestId,
         userId: request.userId,
+        roomId,
       },
     });
 
@@ -542,8 +572,23 @@ router.post('/live/rooms/:roomId/moderation/kick', async (req, res) => {
     }
 
     const room = liveRooms.get(roomId);
-    room.guests.delete(userId);
-    room.viewers.delete(userId);
+
+    if (room?.guests instanceof Set) {
+      for (const value of Array.from(room.guests)) {
+        if (String(value).startsWith(`${userId}::`) || String(value) === String(userId)) {
+          room.guests.delete(value);
+        }
+      }
+    }
+
+    if (room?.viewers instanceof Set) {
+      for (const value of Array.from(room.viewers)) {
+        if (String(value).startsWith(`${userId}::`) || String(value) === String(userId)) {
+          room.viewers.delete(value);
+        }
+      }
+    }
+
     room.requests.delete(userId);
 
     broadcastToRoom(roomId, {
