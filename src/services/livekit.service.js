@@ -69,12 +69,13 @@ async function createLiveKitToken({
 
   const canPublish = safeRole === 'host' || safeRole === 'guest';
 
-  at.addGrant({
+    at.addGrant({
     room: roomId,
     roomJoin: true,
     canPublish,
     canSubscribe: true,
     canPublishData: true,
+    canPublishSources: canPublish ? ['camera', 'microphone'] : [],
   });
 
   const token = await at.toJwt();
