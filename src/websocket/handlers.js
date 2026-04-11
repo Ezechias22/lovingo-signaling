@@ -9,6 +9,66 @@ const {
   generateClientId,
 } = require('../utils/helpers');
 
+function getClientUserId(client) {
+  return client?.userId ? String(client.userId) : '';
+}
+
+function removeUserFromSet(setLike, userId) {
+  if (!(setLike instanceof Set) || !userId) return;
+
+  const safeUserId = String(userId);
+  const prefix = `${safeUserId}::`;
+
+  for (const value of Array.from(setLike)) {
+    const raw = String(value);
+    if (raw === safeUserId || raw.startsWith(prefix)) {
+      setLike.delete(value);
+    }
+  }
+}
+
+function setHasUser(setLike, userId) {
+  if (!(setLike instanceof Set) || !userId) return false;
+
+  const safeUserId = String(userId);
+  const prefix = `${safeUserId}::`;
+
+  for (const value of setLike) {
+    const raw = String(value);
+    if (raw === safeUserId || raw.startsWith(prefix)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function syncLiveStats(roomId) {
+  const liveRoom = liveRooms.get(roomId);
+  if (!liveRoom) return;
+
+  const viewerCount = liveRoom.viewers instanceof Set ? liveRoom.viewers.size : 0;
+  const guestCount = liveRoom.guests instanceof Set ? liveRoom.guests.size : 0;
+
+  liveRoom.stats = liveRoom.stats || {};
+  liveRoom.stats.peakViewers = Math.max(
+    Number(liveRoom.stats.peakViewers || 0),
+    viewerCount + guestCount
+  );
+
+  broadcastToRoom(roomId, {
+    type: 'liveStats',
+    from: 'server',
+    to: roomId,
+    data: {
+      viewerCount,
+      guestCount,
+      stats: liveRoom.stats,
+      hostId: liveRoom.hostId,
+    },
+  });
+}
+
 async function handleMessage(ws, message) {
   const client = clients.get(ws);
   if (!client) return;
@@ -95,6 +155,13 @@ async function handleJoinRoom(ws, message) {
   room.add(ws);
   client.roomId = roomId;
   client.isHost = metadata?.isHost || false;
+  client.liveRole = metadata?.isHost
+    ? 'host'
+    : metadata?.isGuest
+        ? 'guest'
+        : callType === 'live'
+            ? 'audience'
+            : null;
 
   broadcastToRoom(
     roomId,
@@ -145,6 +212,24 @@ async function handleLeaveRoom(ws, message) {
   const room = rooms.get(roomId);
   room.delete(ws);
 
+  const liveRoom = liveRooms.get(roomId);
+  const userId = getClientUserId(client);
+
+  if (liveRoom && userId) {
+    if (String(liveRoom.hostId || '') === userId) {
+      liveRoom.isActive = false;
+    }
+
+    removeUserFromSet(liveRoom.guests, userId);
+    removeUserFromSet(liveRoom.viewers, userId);
+
+    if (liveRoom.requests instanceof Set) {
+      liveRoom.requests.delete(userId);
+    }
+
+    syncLiveStats(roomId);
+  }
+
   broadcastToRoom(roomId, {
     type: 'userLeft',
     from: 'server',
@@ -165,6 +250,7 @@ async function handleLeaveRoom(ws, message) {
 
   client.roomId = null;
   client.isHost = false;
+  client.liveRole = null;
 
   console.log(`👋 ${client.userId || client.id} a quitté la room ${roomId}`);
 }
@@ -195,32 +281,30 @@ async function handleWebRTCSignaling(ws, message) {
 
 async function handleLiveRoomJoin(ws, roomId, metadata) {
   const liveRoom = ensureLiveRoom(roomId);
+  const client = clients.get(ws);
+  const userId = getClientUserId(client);
+
+  if (!userId) return;
 
   if (metadata?.isHost) {
-    liveRoom.hostId = clients.get(ws).userId;
+    liveRoom.hostId = userId;
     liveRoom.title = metadata?.title || liveRoom.title;
+    removeUserFromSet(liveRoom.guests, userId);
+    removeUserFromSet(liveRoom.viewers, userId);
+    client.liveRole = 'host';
   } else if (metadata?.isGuest) {
-    liveRoom.guests.add(clients.get(ws).userId);
+    removeUserFromSet(liveRoom.viewers, userId);
+    liveRoom.guests.add(userId);
+    client.liveRole = 'guest';
   } else {
-    liveRoom.viewers.add(clients.get(ws).userId);
-    liveRoom.stats.totalViewers++;
-    liveRoom.stats.peakViewers = Math.max(
-      liveRoom.stats.peakViewers,
-      liveRoom.viewers.size
-    );
+    if (!setHasUser(liveRoom.guests, userId)) {
+      liveRoom.viewers.add(userId);
+      liveRoom.stats.totalViewers = Number(liveRoom.stats.totalViewers || 0) + 1;
+    }
+    client.liveRole = 'audience';
   }
 
-  broadcastToRoom(roomId, {
-    type: 'liveStats',
-    from: 'server',
-    to: roomId,
-    data: {
-      viewerCount: liveRoom.viewers.size,
-      guestCount: liveRoom.guests.size,
-      stats: liveRoom.stats,
-      hostId: liveRoom.hostId,
-    },
-  });
+  syncLiveStats(roomId);
 }
 
 async function handleLiveControl(ws, message) {
@@ -233,7 +317,7 @@ async function handleLiveControl(ws, message) {
   }
 
   const liveRoom = liveRooms.get(roomId);
-  const { controlType, data } = message.data;
+  const { controlType, data } = message.data || {};
 
   switch (controlType) {
     case 'inviteGuest':
@@ -243,18 +327,28 @@ async function handleLiveControl(ws, message) {
         sendError(ws, "Seul l'hôte peut inviter des invités");
       }
       break;
+
     case 'acceptInvite':
-      liveRoom.guests.add(data.guestId);
+      if (data?.guestId) {
+        removeUserFromSet(liveRoom.viewers, data.guestId);
+        liveRoom.guests.add(String(data.guestId));
+        syncLiveStats(roomId);
+      }
       broadcastToRoom(roomId, message);
       break;
+
     case 'removeGuest':
       if (client.userId === liveRoom.hostId) {
-        liveRoom.guests.delete(data.guestId);
+        if (data?.guestId) {
+          removeUserFromSet(liveRoom.guests, data.guestId);
+          syncLiveStats(roomId);
+        }
         broadcastToRoom(roomId, message);
       } else {
         sendError(ws, "Seul l'hôte peut retirer des invités");
       }
       break;
+
     default:
       broadcastToRoom(roomId, message, ws);
   }
@@ -296,10 +390,11 @@ async function handleVirtualGift(ws, message) {
 
   if (liveRooms.has(roomId)) {
     const liveRoom = liveRooms.get(roomId);
-    liveRoom.stats.totalGifts += message.data.quantity || 1;
+    liveRoom.stats.totalGifts = Number(liveRoom.stats.totalGifts || 0) + (message.data.quantity || 1);
     if (message.data.giftId === 'heart') {
-      liveRoom.stats.totalHearts += message.data.quantity || 1;
+      liveRoom.stats.totalHearts = Number(liveRoom.stats.totalHearts || 0) + (message.data.quantity || 1);
     }
+    syncLiveStats(roomId);
   }
 
   const enrichedMessage = {

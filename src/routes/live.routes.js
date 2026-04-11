@@ -48,26 +48,6 @@ function safeNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function ensureRoomCollections(room) {
-  if (!(room.guests instanceof Set)) {
-    room.guests = new Set(Array.isArray(room.guests) ? room.guests : []);
-  }
-
-  if (!(room.viewers instanceof Set)) {
-    room.viewers = new Set(Array.isArray(room.viewers) ? room.viewers : []);
-  }
-
-  if (!(room.requests instanceof Set)) {
-    room.requests = new Set(Array.isArray(room.requests) ? room.requests : []);
-  }
-
-  if (!(room.approvedGuests instanceof Set)) {
-    room.approvedGuests = new Set(
-      Array.isArray(room.approvedGuests) ? room.approvedGuests : []
-    );
-  }
-}
-
 function buildUniqueParticipantIdentity({
   userId,
   role,
@@ -83,35 +63,19 @@ function buildUniqueParticipantIdentity({
   return `${safeUserId}::${safeRole}::${safeRoomId}::${safeDeviceId}`;
 }
 
-function removeUserIdentitiesFromSet(set, userId) {
-  if (!(set instanceof Set)) return;
-
-  for (const value of Array.from(set)) {
-    const stringValue = String(value);
-    if (stringValue === String(userId) || stringValue.startsWith(`${userId}::`)) {
-      set.delete(value);
-    }
-  }
-}
-
 function getRoomViewerCount(room) {
   if (!room) return 0;
 
-  ensureRoomCollections(room);
-
-  const liveViewers = room.viewers.size;
-  const liveGuests = room.guests.size;
+  const liveViewers = room.viewers instanceof Set ? room.viewers.size : 0;
+  const liveGuests = room.guests instanceof Set ? room.guests.size : 0;
 
   return liveViewers + liveGuests + 1;
 }
 
 function serializeRoom(room) {
-  ensureRoomCollections(room);
-
   const viewerCount = getRoomViewerCount(room);
-  const requestCount = room.requests.size;
-  const guestCount = room.guests.size;
-  const approvedGuestCount = room.approvedGuests.size;
+  const requestCount = room.requests instanceof Set ? room.requests.size : 0;
+  const guestCount = room.guests instanceof Set ? room.guests.size : 0;
 
   return {
     roomId: room.roomId,
@@ -131,7 +95,6 @@ function serializeRoom(room) {
     isNew: safeBoolean(room.isNew, false),
 
     guestCount,
-    approvedGuestCount,
     requestCount,
     stats: {
       totalViewers: safeNumber(room?.stats?.totalViewers, viewerCount),
@@ -140,6 +103,31 @@ function serializeRoom(room) {
       totalHearts: safeNumber(room?.stats?.totalHearts, 0),
     },
   };
+}
+
+function setHasRealUser(setLike, userId) {
+  if (!(setLike instanceof Set)) return false;
+  const prefix = `${String(userId)}::`;
+
+  for (const value of setLike) {
+    if (String(value) === String(userId) || String(value).startsWith(prefix)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function removeUserFromSet(setLike, userId) {
+  if (!(setLike instanceof Set)) return;
+
+  const prefix = `${String(userId)}::`;
+
+  for (const value of Array.from(setLike)) {
+    if (String(value) === String(userId) || String(value).startsWith(prefix)) {
+      setLike.delete(value);
+    }
+  }
 }
 
 router.get('/live/health', (req, res) => {
@@ -227,7 +215,6 @@ router.post('/live/rooms', async (req, res) => {
       guests: new Set(),
       viewers: new Set(),
       requests: new Set(),
-      approvedGuests: new Set(),
       startTime: new Date(),
       stats: {
         totalViewers: 1,
@@ -291,8 +278,6 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
       return res.status(404).json({ error: 'Room introuvable' });
     }
 
-    ensureRoomCollections(room);
-
     const safeRole = ['host', 'guest', 'audience'].includes(role)
       ? role
       : 'audience';
@@ -308,16 +293,6 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
       safeNullableString(photoUrl) ||
       (safeRole === 'host' ? room.hostPhotoUrl || null : null);
 
-    // ✅ Pour un guest, il faut que le host ait accepté
-    if (safeRole === 'guest' && realUserId !== String(room.hostId)) {
-      if (!room.approvedGuests.has(realUserId)) {
-        return res.status(403).json({
-          error: 'Accès guest non autorisé',
-          details: 'Le host n’a pas encore accepté cette demande',
-        });
-      }
-    }
-
     const uniqueIdentity = buildUniqueParticipantIdentity({
       userId: realUserId,
       role: safeRole,
@@ -325,19 +300,27 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
       deviceId,
     });
 
-    // ✅ Évite que le même utilisateur reste à la fois audience et guest
-    removeUserIdentitiesFromSet(room.viewers, realUserId);
-    removeUserIdentitiesFromSet(room.guests, realUserId);
-
     if (safeRole === 'audience') {
       room.viewers.add(uniqueIdentity);
     } else if (safeRole === 'guest') {
+      removeUserFromSet(room.viewers, realUserId);
       room.guests.add(uniqueIdentity);
+      if (room.requests instanceof Set) {
+        room.requests.delete(realUserId);
+      }
+
+      const requests = liveJoinRequests.get(roomId) || [];
+      for (const item of requests) {
+        if (String(item.userId) === realUserId && item.status === 'pending') {
+          item.status = 'accepted';
+        }
+      }
+      liveJoinRequests.set(roomId, requests);
     }
 
     const currentLiveCount =
-      room.viewers.size +
-      room.guests.size +
+      (room.viewers instanceof Set ? room.viewers.size : 0) +
+      (room.guests instanceof Set ? room.guests.size : 0) +
       1;
 
     room.stats.totalViewers = Math.max(
@@ -395,18 +378,34 @@ router.post('/live/rooms/:roomId/requests', async (req, res) => {
       return res.status(404).json({ error: 'Room introuvable' });
     }
 
-    ensureRoomCollections(room);
+    const realUserId = String(userId);
+
+    if (String(room.hostId) === realUserId) {
+      return res.status(409).json({
+        error: 'Le host ne peut pas envoyer de demande',
+      });
+    }
+
+    if (setHasRealUser(room.guests, realUserId)) {
+      return res.status(409).json({
+        error: 'Utilisateur déjà guest dans ce live',
+      });
+    }
 
     const requests = liveJoinRequests.get(roomId) || [];
-    const existing = requests.find(
-      (r) => r.userId === String(userId) && r.status === 'pending'
+
+    const existingPending = requests.find(
+      (r) => String(r.userId) === realUserId && r.status === 'pending'
     );
 
-    if (existing) {
+    if (existingPending) {
       return res.status(200).json({
         success: true,
         alreadyPending: true,
-        requestId: existing.requestId,
+        requestId: existingPending.requestId,
+        roomId,
+        userId: realUserId,
+        status: 'pending',
       });
     }
 
@@ -414,8 +413,8 @@ router.post('/live/rooms/:roomId/requests', async (req, res) => {
     const joinRequest = {
       requestId,
       roomId,
-      userId: String(userId),
-      userName: safeString(userName, String(userId)),
+      userId: realUserId,
+      userName: safeString(userName, realUserId),
       photoUrl: safeNullableString(photoUrl),
       message: safeString(message),
       createdAt: new Date().toISOString(),
@@ -425,7 +424,9 @@ router.post('/live/rooms/:roomId/requests', async (req, res) => {
     requests.push(joinRequest);
     liveJoinRequests.set(roomId, requests);
 
-    room.requests.add(String(userId));
+    if (room.requests instanceof Set) {
+      room.requests.add(realUserId);
+    }
 
     broadcastToRoom(roomId, {
       type: 'liveJoinRequest',
@@ -434,13 +435,13 @@ router.post('/live/rooms/:roomId/requests', async (req, res) => {
       data: joinRequest,
     });
 
-    console.log(`🙋 Join request: ${userId} -> ${roomId}`);
+    console.log(`🙋 Join request: ${realUserId} -> ${roomId}`);
 
     return res.status(201).json({
       success: true,
       requestId,
       roomId,
-      userId: String(userId),
+      userId: realUserId,
       status: 'pending',
     });
   } catch (error) {
@@ -483,8 +484,6 @@ router.post('/live/rooms/:roomId/requests/:requestId/accept', async (req, res) =
       return res.status(404).json({ error: 'Room introuvable' });
     }
 
-    ensureRoomCollections(room);
-
     const requests = liveJoinRequests.get(roomId) || [];
     const request = requests.find((r) => r.requestId === requestId);
 
@@ -493,8 +492,10 @@ router.post('/live/rooms/:roomId/requests/:requestId/accept', async (req, res) =
     }
 
     request.status = 'accepted';
-    room.requests.delete(request.userId);
-    room.approvedGuests.add(String(request.userId));
+
+    if (room.requests instanceof Set) {
+      room.requests.delete(request.userId);
+    }
 
     broadcastToRoom(roomId, {
       type: 'liveJoinRequestAccepted',
@@ -506,7 +507,6 @@ router.post('/live/rooms/:roomId/requests/:requestId/accept', async (req, res) =
         userName: request.userName || request.userId,
         photoUrl: request.photoUrl || null,
         roomId,
-        approvedAsGuest: true,
       },
     });
 
@@ -518,7 +518,6 @@ router.post('/live/rooms/:roomId/requests/:requestId/accept', async (req, res) =
       requestId,
       userId: request.userId,
       status: 'accepted',
-      approvedAsGuest: true,
     });
   } catch (error) {
     console.error('❌ Erreur accept request:', error);
@@ -538,8 +537,6 @@ router.post('/live/rooms/:roomId/requests/:requestId/reject', async (req, res) =
       return res.status(404).json({ error: 'Room introuvable' });
     }
 
-    ensureRoomCollections(room);
-
     const requests = liveJoinRequests.get(roomId) || [];
     const request = requests.find((r) => r.requestId === requestId);
 
@@ -548,8 +545,10 @@ router.post('/live/rooms/:roomId/requests/:requestId/reject', async (req, res) =
     }
 
     request.status = 'rejected';
-    room.requests.delete(request.userId);
-    room.approvedGuests.delete(String(request.userId));
+
+    if (room.requests instanceof Set) {
+      room.requests.delete(request.userId);
+    }
 
     broadcastToRoom(roomId, {
       type: 'liveJoinRequestRejected',
@@ -632,12 +631,21 @@ router.post('/live/rooms/:roomId/moderation/kick', async (req, res) => {
     }
 
     const room = liveRooms.get(roomId);
-    ensureRoomCollections(room);
 
-    removeUserIdentitiesFromSet(room.guests, userId);
-    removeUserIdentitiesFromSet(room.viewers, userId);
-    room.requests.delete(String(userId));
-    room.approvedGuests.delete(String(userId));
+    removeUserFromSet(room?.guests, userId);
+    removeUserFromSet(room?.viewers, userId);
+
+    if (room?.requests instanceof Set) {
+      room.requests.delete(userId);
+    }
+
+    const requests = liveJoinRequests.get(roomId) || [];
+    for (const request of requests) {
+      if (String(request.userId) === String(userId) && request.status === 'pending') {
+        request.status = 'rejected';
+      }
+    }
+    liveJoinRequests.set(roomId, requests);
 
     broadcastToRoom(roomId, {
       type: 'liveModerationKick',
