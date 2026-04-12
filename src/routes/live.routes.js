@@ -406,18 +406,24 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
     });
 
     if (safeRole === 'audience') {
+      removeUserFromSet(room.guests, realUserId);
+      removeUserFromSet(room.viewers, realUserId);
       room.viewers.add(uniqueIdentity);
     } else if (safeRole === 'guest') {
       removeUserFromSet(room.viewers, realUserId);
+      removeUserFromSet(room.guests, realUserId);
       room.guests.add(uniqueIdentity);
+
       if (room.requests instanceof Set) {
         room.requests.delete(realUserId);
       }
 
       const requests = liveJoinRequests.get(roomId) || [];
       for (const item of requests) {
-        if (String(item.userId) === realUserId && item.status === 'pending') {
-          item.status = 'accepted';
+        if (String(item.userId) === realUserId) {
+          if (item.status === 'pending' || item.status === 'accepted') {
+            item.status = 'accepted';
+          }
         }
       }
       liveJoinRequests.set(roomId, requests);
