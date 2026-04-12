@@ -65,8 +65,63 @@ function syncLiveStats(roomId) {
       guestCount,
       stats: liveRoom.stats,
       hostId: liveRoom.hostId,
+      isActive: liveRoom.isActive === true,
     },
   });
+}
+
+function terminateLiveRoom(roomId, endedByUserId = null) {
+  const liveRoom = liveRooms.get(roomId);
+  if (!liveRoom) return;
+
+  liveRoom.isActive = false;
+  liveRoom.endedAt = new Date().toISOString();
+
+  if (liveRoom.viewers instanceof Set) {
+    liveRoom.viewers.clear();
+  }
+
+  if (liveRoom.guests instanceof Set) {
+    liveRoom.guests.clear();
+  }
+
+  if (liveRoom.requests instanceof Set) {
+    liveRoom.requests.clear();
+  }
+
+  const requests = liveJoinRequests.get(roomId) || [];
+  for (const request of requests) {
+    if (request.status === 'pending') {
+      request.status = 'ended';
+    }
+  }
+  liveJoinRequests.set(roomId, requests);
+
+  broadcastToRoom(roomId, {
+    type: 'liveEnded',
+    from: 'server',
+    to: roomId,
+    data: {
+      roomId,
+      endedAt: liveRoom.endedAt,
+      endedByUserId: endedByUserId ? String(endedByUserId) : liveRoom.hostId,
+    },
+  });
+
+  const room = rooms.get(roomId);
+  if (room instanceof Set) {
+    for (const ws of Array.from(room)) {
+      const client = clients.get(ws);
+      if (client) {
+        client.roomId = null;
+        client.isHost = false;
+        client.liveRole = null;
+      }
+    }
+    rooms.delete(roomId);
+  }
+
+  console.log(`🔴 Room live terminée: ${roomId}`);
 }
 
 async function handleMessage(ws, message) {
@@ -216,18 +271,26 @@ async function handleLeaveRoom(ws, message) {
   const userId = getClientUserId(client);
 
   if (liveRoom && userId) {
-    if (String(liveRoom.hostId || '') === userId) {
-      liveRoom.isActive = false;
+    const isHostLeaving = String(liveRoom.hostId || '') === userId;
+
+    if (isHostLeaving) {
+      terminateLiveRoom(roomId, userId);
+    } else {
+      removeUserFromSet(liveRoom.guests, userId);
+      removeUserFromSet(liveRoom.viewers, userId);
+
+      if (liveRoom.requests instanceof Set) {
+        liveRoom.requests.delete(userId);
+      }
+
+      syncLiveStats(roomId);
+
+      if (room.size === 0 && liveRoom.isActive !== true) {
+        rooms.delete(roomId);
+        liveRooms.delete(roomId);
+        liveJoinRequests.delete(roomId);
+      }
     }
-
-    removeUserFromSet(liveRoom.guests, userId);
-    removeUserFromSet(liveRoom.viewers, userId);
-
-    if (liveRoom.requests instanceof Set) {
-      liveRoom.requests.delete(userId);
-    }
-
-    syncLiveStats(roomId);
   }
 
   broadcastToRoom(roomId, {
@@ -243,9 +306,13 @@ async function handleLeaveRoom(ws, message) {
 
   if (room.size === 0) {
     rooms.delete(roomId);
-    liveRooms.delete(roomId);
-    liveJoinRequests.delete(roomId);
-    console.log(`🗑️ Room ${roomId} supprimée (vide)`);
+
+    const liveRoomAfter = liveRooms.get(roomId);
+    if (!liveRoomAfter || liveRoomAfter.isActive !== true) {
+      liveRooms.delete(roomId);
+      liveJoinRequests.delete(roomId);
+      console.log(`🗑️ Room ${roomId} supprimée (vide)`);
+    }
   }
 
   client.roomId = null;
@@ -289,6 +356,7 @@ async function handleLiveRoomJoin(ws, roomId, metadata) {
   if (metadata?.isHost) {
     liveRoom.hostId = userId;
     liveRoom.title = metadata?.title || liveRoom.title;
+    liveRoom.isActive = true;
     removeUserFromSet(liveRoom.guests, userId);
     removeUserFromSet(liveRoom.viewers, userId);
     client.liveRole = 'host';

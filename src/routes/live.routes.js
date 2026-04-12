@@ -1,6 +1,6 @@
 const express = require('express');
 const crypto = require('crypto');
-const { liveRooms, liveJoinRequests } = require('../state/store');
+const { liveRooms, liveJoinRequests, rooms, clients } = require('../state/store');
 const { getUserIdFromRequest, broadcastToRoom } = require('../utils/helpers');
 const { createLiveKitToken } = require('../services/livekit.service');
 const {
@@ -68,8 +68,9 @@ function getRoomViewerCount(room) {
 
   const liveViewers = room.viewers instanceof Set ? room.viewers.size : 0;
   const liveGuests = room.guests instanceof Set ? room.guests.size : 0;
+  const hostCount = room.isActive === false ? 0 : 1;
 
-  return liveViewers + liveGuests + 1;
+  return liveViewers + liveGuests + hostCount;
 }
 
 function serializeRoom(room) {
@@ -84,6 +85,7 @@ function serializeRoom(room) {
     maxGuests: safeNumber(room.maxGuests, 20),
     isActive: safeBoolean(room.isActive, true),
     createdAt: toIsoDate(room.startTime),
+    endedAt: room.endedAt ? toIsoDate(room.endedAt) : null,
 
     livekitRoomName: room.livekitRoomName || room.roomId,
     hostUsername: room.hostUsername || room.hostId,
@@ -130,6 +132,61 @@ function removeUserFromSet(setLike, userId) {
   }
 }
 
+function terminateLiveRoom(roomId, endedByUserId = null) {
+  const room = liveRooms.get(roomId);
+  if (!room) return null;
+
+  room.isActive = false;
+  room.endedAt = new Date().toISOString();
+
+  if (room.viewers instanceof Set) {
+    room.viewers.clear();
+  }
+
+  if (room.guests instanceof Set) {
+    room.guests.clear();
+  }
+
+  if (room.requests instanceof Set) {
+    room.requests.clear();
+  }
+
+  const requests = liveJoinRequests.get(roomId) || [];
+  for (const request of requests) {
+    if (request.status === 'pending') {
+      request.status = 'ended';
+    }
+  }
+  liveJoinRequests.set(roomId, requests);
+
+  broadcastToRoom(roomId, {
+    type: 'liveEnded',
+    from: 'server',
+    to: roomId,
+    data: {
+      roomId,
+      endedAt: room.endedAt,
+      endedByUserId: endedByUserId ? String(endedByUserId) : room.hostId,
+    },
+  });
+
+  const roomClients = rooms.get(roomId);
+  if (roomClients instanceof Set) {
+    for (const ws of Array.from(roomClients)) {
+      const client = clients.get(ws);
+      if (client) {
+        client.roomId = null;
+        client.isHost = false;
+        client.liveRole = null;
+      }
+    }
+    rooms.delete(roomId);
+  }
+
+  console.log(`🔴 Live terminé: ${roomId}`);
+  return room;
+}
+
 router.get('/live/health', (req, res) => {
   res.status(200).json({
     status: 'OK',
@@ -144,8 +201,8 @@ router.get('/live/health', (req, res) => {
 
 router.get('/live/rooms', async (req, res) => {
   try {
-    const rooms = Array.from(liveRooms.values())
-      .filter((room) => room && room.isActive !== false)
+    const roomsList = Array.from(liveRooms.values())
+      .filter((room) => room && room.isActive === true)
       .map(serializeRoom)
       .sort((a, b) => {
         const aTrending = a.isTrending ? 1 : 0;
@@ -162,7 +219,7 @@ router.get('/live/rooms', async (req, res) => {
         return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       });
 
-    return res.status(200).json(rooms);
+    return res.status(200).json(roomsList);
   } catch (error) {
     console.error('❌ Erreur get active live rooms:', error);
     return res.status(500).json({
@@ -216,6 +273,7 @@ router.post('/live/rooms', async (req, res) => {
       viewers: new Set(),
       requests: new Set(),
       startTime: new Date(),
+      endedAt: null,
       stats: {
         totalViewers: 1,
         peakViewers: 1,
@@ -259,6 +317,49 @@ router.get('/live/rooms/:roomId', async (req, res) => {
   }
 });
 
+router.post('/live/rooms/:roomId/end', async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const room = liveRooms.get(roomId);
+
+    if (!room) {
+      return res.status(404).json({ error: 'Room introuvable' });
+    }
+
+    const authUserId = getUserIdFromRequest(req);
+    const bodyUserId = req.body?.userId;
+    const userId = String(authUserId || bodyUserId || '');
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Utilisateur non authentifié' });
+    }
+
+    if (String(room.hostId) !== userId) {
+      return res.status(403).json({ error: 'Seul le host peut terminer le live' });
+    }
+
+    const endedRoom = terminateLiveRoom(roomId, userId);
+    const alternativeRooms = Array.from(liveRooms.values())
+      .filter((item) => item && item.roomId !== roomId && item.isActive === true)
+      .map(serializeRoom)
+      .sort((a, b) => (b.viewerCount || 0) - (a.viewerCount || 0))
+      .slice(0, 20);
+
+    return res.status(200).json({
+      success: true,
+      roomId,
+      endedAt: endedRoom?.endedAt || new Date().toISOString(),
+      alternativeRooms,
+    });
+  } catch (error) {
+    console.error('❌ Erreur end live room:', error);
+    return res.status(500).json({
+      error: 'Impossible de terminer le live',
+      details: error.message,
+    });
+  }
+});
+
 router.post('/live/rooms/:roomId/token', async (req, res) => {
   try {
     const { roomId } = req.params;
@@ -276,6 +377,10 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
     const room = liveRooms.get(roomId);
     if (!room) {
       return res.status(404).json({ error: 'Room introuvable' });
+    }
+
+    if (room.isActive !== true) {
+      return res.status(409).json({ error: 'Ce live est terminé' });
     }
 
     const safeRole = ['host', 'guest', 'audience'].includes(role)
@@ -376,6 +481,10 @@ router.post('/live/rooms/:roomId/requests', async (req, res) => {
     const room = liveRooms.get(roomId);
     if (!room) {
       return res.status(404).json({ error: 'Room introuvable' });
+    }
+
+    if (room.isActive !== true) {
+      return res.status(409).json({ error: 'Ce live est terminé' });
     }
 
     const realUserId = String(userId);
@@ -484,6 +593,10 @@ router.post('/live/rooms/:roomId/requests/:requestId/accept', async (req, res) =
       return res.status(404).json({ error: 'Room introuvable' });
     }
 
+    if (room.isActive !== true) {
+      return res.status(409).json({ error: 'Ce live est terminé' });
+    }
+
     const requests = liveJoinRequests.get(roomId) || [];
     const request = requests.find((r) => r.requestId === requestId);
 
@@ -586,10 +699,6 @@ router.post('/live/rooms/:roomId/moderation/mute', async (req, res) => {
 
     if (!liveRooms.has(roomId)) {
       return res.status(404).json({ error: 'Room introuvable' });
-    }
-
-    if (!userId) {
-      return res.status(400).json({ error: 'userId requis' });
     }
 
     broadcastToRoom(roomId, {
