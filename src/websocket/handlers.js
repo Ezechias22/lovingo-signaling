@@ -43,6 +43,14 @@ function setHasUser(setLike, userId) {
   return false;
 }
 
+function isBlocked(liveRoom, userId) {
+  if (!liveRoom || !(liveRoom.blockedUsers instanceof Set) || !userId) {
+    return false;
+  }
+
+  return liveRoom.blockedUsers.has(String(userId));
+}
+
 function syncLiveStats(roomId) {
   const liveRoom = liveRooms.get(roomId);
   if (!liveRoom) return;
@@ -89,9 +97,13 @@ function terminateLiveRoom(roomId, endedByUserId = null) {
     liveRoom.requests.clear();
   }
 
+  if (liveRoom.invitedUsers instanceof Set) {
+    liveRoom.invitedUsers.clear();
+  }
+
   const requests = liveJoinRequests.get(roomId) || [];
   for (const request of requests) {
-    if (request.status === 'pending') {
+    if (request.status === 'pending' || request.status === 'invited') {
       request.status = 'ended';
     }
   }
@@ -110,12 +122,12 @@ function terminateLiveRoom(roomId, endedByUserId = null) {
 
   const room = rooms.get(roomId);
   if (room instanceof Set) {
-    for (const ws of Array.from(room)) {
-      const client = clients.get(ws);
-      if (client) {
-        client.roomId = null;
-        client.isHost = false;
-        client.liveRole = null;
+    for (const socket of Array.from(room)) {
+      const roomClient = clients.get(socket);
+      if (roomClient) {
+        roomClient.roomId = null;
+        roomClient.isHost = false;
+        roomClient.liveRole = null;
       }
     }
     rooms.delete(roomId);
@@ -191,6 +203,20 @@ async function handleJoinRoom(ws, message) {
     return;
   }
 
+  const liveRoom = liveRooms.get(roomId);
+  const joiningUserId =
+    metadata?.userId || client.userId || message.from || client.id;
+
+  if (liveRoom && isBlocked(liveRoom, joiningUserId)) {
+    sendError(ws, 'Vous êtes bloqué dans ce live');
+    return;
+  }
+
+  if (liveRoom && liveRoom.isActive === false) {
+    sendError(ws, 'Ce live est terminé');
+    return;
+  }
+
   if (client.roomId) {
     await handleLeaveRoom(ws, { to: client.roomId });
   }
@@ -213,10 +239,10 @@ async function handleJoinRoom(ws, message) {
   client.liveRole = metadata?.isHost
     ? 'host'
     : metadata?.isGuest
-        ? 'guest'
-        : callType === 'live'
-            ? 'audience'
-            : null;
+      ? 'guest'
+      : callType === 'live'
+        ? 'audience'
+        : null;
 
   broadcastToRoom(
     roomId,
@@ -281,6 +307,10 @@ async function handleLeaveRoom(ws, message) {
 
       if (liveRoom.requests instanceof Set) {
         liveRoom.requests.delete(userId);
+      }
+
+      if (liveRoom.invitedUsers instanceof Set) {
+        liveRoom.invitedUsers.delete(userId);
       }
 
       syncLiveStats(roomId);
@@ -353,6 +383,14 @@ async function handleLiveRoomJoin(ws, roomId, metadata) {
 
   if (!userId) return;
 
+  if (!(liveRoom.blockedUsers instanceof Set)) {
+    liveRoom.blockedUsers = new Set();
+  }
+
+  if (!(liveRoom.invitedUsers instanceof Set)) {
+    liveRoom.invitedUsers = new Set();
+  }
+
   if (metadata?.isHost) {
     liveRoom.hostId = userId;
     liveRoom.title = metadata?.title || liveRoom.title;
@@ -362,12 +400,16 @@ async function handleLiveRoomJoin(ws, roomId, metadata) {
     client.liveRole = 'host';
   } else if (metadata?.isGuest) {
     removeUserFromSet(liveRoom.viewers, userId);
+    removeUserFromSet(liveRoom.guests, userId);
     liveRoom.guests.add(userId);
+    liveRoom.invitedUsers.delete(String(userId));
     client.liveRole = 'guest';
   } else {
+    removeUserFromSet(liveRoom.viewers, userId);
     if (!setHasUser(liveRoom.guests, userId)) {
       liveRoom.viewers.add(userId);
-      liveRoom.stats.totalViewers = Number(liveRoom.stats.totalViewers || 0) + 1;
+      liveRoom.stats.totalViewers =
+        Number(liveRoom.stats.totalViewers || 0) + 1;
     }
     client.liveRole = 'audience';
   }
@@ -388,37 +430,197 @@ async function handleLiveControl(ws, message) {
   const { controlType, data } = message.data || {};
 
   switch (controlType) {
-    case 'inviteGuest':
-      if (client.userId === liveRoom.hostId) {
-        broadcastToRoom(roomId, message);
-      } else {
+    case 'inviteGuest': {
+      if (client.userId !== liveRoom.hostId) {
         sendError(ws, "Seul l'hôte peut inviter des invités");
+        return;
       }
-      break;
 
-    case 'acceptInvite':
-      if (data?.guestId) {
-        removeUserFromSet(liveRoom.viewers, data.guestId);
-        liveRoom.guests.add(String(data.guestId));
+      const targetUserId = data?.guestId || data?.userId;
+      if (!targetUserId) {
+        sendError(ws, 'guestId requis');
+        return;
+      }
+
+      if (!(liveRoom.invitedUsers instanceof Set)) {
+        liveRoom.invitedUsers = new Set();
+      }
+
+      liveRoom.invitedUsers.add(String(targetUserId));
+
+      broadcastToRoom(roomId, {
+        type: 'liveGuestInvited',
+        from: 'server',
+        to: roomId,
+        data: {
+          roomId,
+          userId: String(targetUserId),
+        },
+      });
+
+      break;
+    }
+
+    case 'acceptInvite': {
+      const guestId = data?.guestId || data?.userId;
+      if (guestId) {
+        removeUserFromSet(liveRoom.viewers, guestId);
+        removeUserFromSet(liveRoom.guests, guestId);
+        liveRoom.guests.add(String(guestId));
+
+        if (liveRoom.invitedUsers instanceof Set) {
+          liveRoom.invitedUsers.delete(String(guestId));
+        }
+
         syncLiveStats(roomId);
       }
-      broadcastToRoom(roomId, message);
-      break;
 
-    case 'removeGuest':
-      if (client.userId === liveRoom.hostId) {
-        if (data?.guestId) {
-          removeUserFromSet(liveRoom.guests, data.guestId);
-          syncLiveStats(roomId);
-        }
-        broadcastToRoom(roomId, message);
-      } else {
-        sendError(ws, "Seul l'hôte peut retirer des invités");
-      }
+      broadcastToRoom(roomId, {
+        type: 'liveGuestInviteAccepted',
+        from: 'server',
+        to: roomId,
+        data: {
+          roomId,
+          userId: String(guestId || ''),
+        },
+      });
+
       break;
+    }
+
+    case 'removeGuest': {
+      const targetUserId = data?.guestId || data?.userId;
+      if (!targetUserId) {
+        sendError(ws, 'guestId requis');
+        return;
+      }
+
+      const isSelf = String(targetUserId) === String(client.userId);
+      const isHost = String(client.userId) === String(liveRoom.hostId);
+
+      if (!isHost && !isSelf) {
+        sendError(ws, "Seul l'hôte ou le guest concerné peut descendre");
+        return;
+      }
+
+      removeUserFromSet(liveRoom.guests, targetUserId);
+      removeUserFromSet(liveRoom.viewers, targetUserId);
+      liveRoom.viewers.add(String(targetUserId));
+
+      if (liveRoom.invitedUsers instanceof Set) {
+        liveRoom.invitedUsers.delete(String(targetUserId));
+      }
+
+      syncLiveStats(roomId);
+
+      broadcastToRoom(roomId, {
+        type: 'liveGuestRemoved',
+        from: 'server',
+        to: roomId,
+        data: {
+          roomId,
+          userId: String(targetUserId),
+        },
+      });
+
+      break;
+    }
+
+    case 'muteUser': {
+      if (client.userId !== liveRoom.hostId) {
+        sendError(ws, "Seul l'hôte peut mute un participant");
+        return;
+      }
+
+      const targetUserId = data?.userId;
+      if (!targetUserId) {
+        sendError(ws, 'userId requis');
+        return;
+      }
+
+      broadcastToRoom(roomId, {
+        type: 'liveModerationMute',
+        from: 'server',
+        to: roomId,
+        data: {
+          roomId,
+          userId: String(targetUserId),
+          muted: Boolean(data?.muted),
+        },
+      });
+
+      break;
+    }
+
+    case 'blockUser': {
+      if (client.userId !== liveRoom.hostId) {
+        sendError(ws, "Seul l'hôte peut bloquer un participant");
+        return;
+      }
+
+      const targetUserId = data?.userId;
+      if (!targetUserId) {
+        sendError(ws, 'userId requis');
+        return;
+      }
+
+      if (!(liveRoom.blockedUsers instanceof Set)) {
+        liveRoom.blockedUsers = new Set();
+      }
+
+      liveRoom.blockedUsers.add(String(targetUserId));
+      removeUserFromSet(liveRoom.guests, targetUserId);
+      removeUserFromSet(liveRoom.viewers, targetUserId);
+
+      if (liveRoom.requests instanceof Set) {
+        liveRoom.requests.delete(String(targetUserId));
+      }
+
+      if (liveRoom.invitedUsers instanceof Set) {
+        liveRoom.invitedUsers.delete(String(targetUserId));
+      }
+
+      const requests = liveJoinRequests.get(roomId) || [];
+      for (const request of requests) {
+        if (
+          String(request.userId) === String(targetUserId) &&
+          (request.status === 'pending' ||
+            request.status === 'accepted' ||
+            request.status === 'invited')
+        ) {
+          request.status = 'blocked';
+        }
+      }
+      liveJoinRequests.set(roomId, requests);
+
+      syncLiveStats(roomId);
+
+      broadcastToRoom(roomId, {
+        type: 'liveUserBlocked',
+        from: 'server',
+        to: roomId,
+        data: {
+          roomId,
+          userId: String(targetUserId),
+        },
+      });
+
+      break;
+    }
+
+    case 'endLive': {
+      if (client.userId !== liveRoom.hostId) {
+        sendError(ws, "Seul l'hôte peut terminer le live");
+        return;
+      }
+
+      terminateLiveRoom(roomId, client.userId);
+      break;
+    }
 
     default:
       broadcastToRoom(roomId, message, ws);
+      break;
   }
 }
 
@@ -428,6 +630,12 @@ async function handleLiveChat(ws, message) {
 
   if (!roomId) {
     sendError(ws, 'Pas dans une room');
+    return;
+  }
+
+  const liveRoom = liveRooms.get(roomId);
+  if (liveRoom && isBlocked(liveRoom, client.userId)) {
+    sendError(ws, 'Vous êtes bloqué dans ce live');
     return;
   }
 
@@ -456,12 +664,22 @@ async function handleVirtualGift(ws, message) {
     return;
   }
 
+  const liveRoom = liveRooms.get(roomId);
+  if (liveRoom && isBlocked(liveRoom, client.userId)) {
+    sendError(ws, 'Vous êtes bloqué dans ce live');
+    return;
+  }
+
   if (liveRooms.has(roomId)) {
-    const liveRoom = liveRooms.get(roomId);
-    liveRoom.stats.totalGifts = Number(liveRoom.stats.totalGifts || 0) + (message.data.quantity || 1);
+    const room = liveRooms.get(roomId);
+    room.stats.totalGifts =
+      Number(room.stats.totalGifts || 0) + (message.data.quantity || 1);
+
     if (message.data.giftId === 'heart') {
-      liveRoom.stats.totalHearts = Number(liveRoom.stats.totalHearts || 0) + (message.data.quantity || 1);
+      room.stats.totalHearts =
+        Number(room.stats.totalHearts || 0) + (message.data.quantity || 1);
     }
+
     syncLiveStats(roomId);
   }
 
@@ -476,7 +694,9 @@ async function handleVirtualGift(ws, message) {
   };
 
   broadcastToRoom(roomId, enrichedMessage);
-  console.log(`🎁 Cadeau ${message.data.giftId} de ${client.userId} dans ${roomId}`);
+  console.log(
+    `🎁 Cadeau ${message.data.giftId} de ${client.userId} dans ${roomId}`
+  );
 }
 
 async function handleInitiateCall(ws, message) {
@@ -512,7 +732,9 @@ async function handleInitiateCall(ws, message) {
       },
     });
 
-    console.log(`✅ Notification d'appel envoyée à ${targetUserId} de ${client.userId}`);
+    console.log(
+      `✅ Notification d'appel envoyée à ${targetUserId} de ${client.userId}`
+    );
   } else {
     sendError(ws, `Utilisateur ${targetUserId} hors ligne`);
     console.log(`❌ Utilisateur ${targetUserId} introuvable pour appel`);
@@ -552,4 +774,6 @@ function handleDisconnection(ws) {
 module.exports = {
   handleMessage,
   handleDisconnection,
+  terminateLiveRoom,
+  syncLiveStats,
 };

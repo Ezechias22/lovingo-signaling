@@ -153,7 +153,10 @@ function ensureLiveRoom(roomId) {
       guests: new Set(),
       viewers: new Set(),
       requests: new Set(),
+      blockedUsers: new Set(),
+      invitedUsers: new Set(),
       startTime: new Date(),
+      endedAt: null,
       stats: {
         totalViewers: 0,
         peakViewers: 0,
@@ -164,11 +167,50 @@ function ensureLiveRoom(roomId) {
     });
   }
 
+  const room = liveRooms.get(roomId);
+
+  if (!(room.guests instanceof Set)) {
+    room.guests = new Set();
+  }
+
+  if (!(room.viewers instanceof Set)) {
+    room.viewers = new Set();
+  }
+
+  if (!(room.requests instanceof Set)) {
+    room.requests = new Set();
+  }
+
+  if (!(room.blockedUsers instanceof Set)) {
+    room.blockedUsers = new Set();
+  }
+
+  if (!(room.invitedUsers instanceof Set)) {
+    room.invitedUsers = new Set();
+  }
+
+  if (!room.stats || typeof room.stats !== 'object') {
+    room.stats = {
+      totalViewers: 0,
+      peakViewers: 0,
+      totalGifts: 0,
+      totalHearts: 0,
+    };
+  }
+
+  if (typeof room.isActive !== 'boolean') {
+    room.isActive = true;
+  }
+
+  if (!room.startTime) {
+    room.startTime = new Date();
+  }
+
   if (!liveJoinRequests.has(roomId)) {
     liveJoinRequests.set(roomId, []);
   }
 
-  return liveRooms.get(roomId);
+  return room;
 }
 
 module.exports = {
