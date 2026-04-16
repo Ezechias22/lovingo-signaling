@@ -3,6 +3,18 @@ const { clients } = require('../state/store');
 const { generateClientId, sendMessage, sendError } = require('../utils/helpers');
 const { handleMessage, handleDisconnection } = require('./handlers');
 
+function extractUserIdFromRequest(req) {
+  try {
+    const host = req.headers.host || 'localhost';
+    const url = new URL(req.url || '/', `http://${host}`);
+    const userId = url.searchParams.get('userId');
+    return userId ? String(userId) : null;
+  } catch (error) {
+    console.error('❌ Erreur lecture userId depuis URL websocket:', error);
+    return null;
+  }
+}
+
 function createWebSocketServer(server) {
   const wss = new WebSocket.Server({
     server,
@@ -14,20 +26,25 @@ function createWebSocketServer(server) {
   wss.on('connection', (ws, req) => {
     const userAgent = req.headers['user-agent'] || 'Unknown';
     const clientIP =
-      req.connection.remoteAddress ||
+      req.connection?.remoteAddress ||
+      req.socket?.remoteAddress ||
       req.headers['x-forwarded-for'] ||
       'Unknown';
 
+    const userIdFromQuery = extractUserIdFromRequest(req);
+
     console.log(
-      `📱 Nouvelle connexion: ${clientIP} (${userAgent.substring(0, 50)})`
+      `📱 Nouvelle connexion: ${clientIP} (${String(userAgent).substring(0, 50)})`
     );
+    console.log(`🆔 userId websocket détecté: ${userIdFromQuery || 'AUCUN'}`);
 
     const clientInfo = {
       id: generateClientId(),
-      userId: null,
+      userId: userIdFromQuery,
       roomId: null,
       connectedAt: new Date(),
       isHost: false,
+      liveRole: null,
       lastHeartbeat: new Date(),
       userAgent,
       ip: clientIP,
@@ -36,6 +53,7 @@ function createWebSocketServer(server) {
     clients.set(ws, clientInfo);
 
     ws.isAlive = true;
+
     ws.on('pong', () => {
       ws.isAlive = true;
       const client = clients.get(ws);
@@ -67,13 +85,18 @@ function createWebSocketServer(server) {
     sendMessage(ws, {
       type: 'connected',
       from: 'server',
-      to: clientInfo.id,
+      to: clientInfo.userId || clientInfo.id,
       data: {
         clientId: clientInfo.id,
+        userId: clientInfo.userId,
         serverTime: new Date().toISOString(),
-        version: '2.1.0',
+        version: '2.1.1',
       },
     });
+
+    console.log(
+      `✅ Socket enregistré: clientId=${clientInfo.id} | userId=${clientInfo.userId || 'null'}`
+    );
   });
 
   return wss;

@@ -13,6 +13,24 @@ function getClientUserId(client) {
   return client?.userId ? String(client.userId) : '';
 }
 
+function getSocketFromClientLookup(targetClient) {
+  if (!targetClient) return null;
+
+  if (typeof targetClient.send === 'function') {
+    return targetClient;
+  }
+
+  if (targetClient.ws && typeof targetClient.ws.send === 'function') {
+    return targetClient.ws;
+  }
+
+  if (targetClient.socket && typeof targetClient.socket.send === 'function') {
+    return targetClient.socket;
+  }
+
+  return null;
+}
+
 function removeUserFromSet(setLike, userId) {
   if (!(setLike instanceof Set) || !userId) return;
 
@@ -141,11 +159,11 @@ async function handleMessage(ws, message) {
   if (!client) return;
 
   console.log(
-    `📨 Message reçu: ${message.type} de ${message.from || 'anonymous'}`
+    `📨 Message reçu: ${message.type} de ${message.from || client.userId || 'anonymous'}`
   );
 
   if (message.from && message.from !== 'server') {
-    client.userId = message.from;
+    client.userId = String(message.from);
   }
 
   try {
@@ -180,7 +198,7 @@ async function handleMessage(ws, message) {
         sendMessage(ws, {
           type: 'pong',
           from: 'server',
-          to: client.userId,
+          to: client.userId || client.id,
           data: { timestamp: new Date().toISOString() },
         });
         break;
@@ -264,7 +282,7 @@ async function handleJoinRoom(ws, message) {
   sendMessage(ws, {
     type: 'roomJoined',
     from: 'server',
-    to: client.userId,
+    to: client.userId || client.id,
     data: {
       roomId,
       participantCount: room.size,
@@ -701,44 +719,89 @@ async function handleVirtualGift(ws, message) {
 
 async function handleInitiateCall(ws, message) {
   const client = clients.get(ws);
-  const { targetUserId, callerName, callType, roomId } = message.data;
+
+  const targetUserId = String(message.data?.targetUserId || '').trim();
+  const callerName = String(
+    message.data?.callerName || client.userId || client.id || 'Utilisateur'
+  ).trim();
+  const callType = String(message.data?.callType || 'audio').trim();
+
+  const callId = String(message.data?.callId || '').trim();
+  const channelName = String(
+    message.data?.channelName || message.data?.roomId || callId
+  ).trim();
 
   console.log(`📞 Tentative d'appel de ${client.userId} vers ${targetUserId}`);
+  console.log(`📦 Payload appel:`, {
+    targetUserId,
+    callerName,
+    callType,
+    callId,
+    channelName,
+  });
+
+  if (!client.userId) {
+    sendError(ws, 'Utilisateur appelant non identifié');
+    return;
+  }
+
+  if (!targetUserId) {
+    sendError(ws, 'targetUserId requis');
+    return;
+  }
+
+  if (!callId) {
+    sendError(ws, 'callId requis');
+    return;
+  }
+
+  if (!channelName) {
+    sendError(ws, 'channelName requis');
+    return;
+  }
 
   const targetClient = findClientByUserId(targetUserId);
+  const targetSocket = getSocketFromClientLookup(targetClient);
 
-  if (targetClient) {
-    sendMessage(targetClient.ws, {
-      type: 'incomingCall',
-      from: 'server',
-      to: targetUserId,
-      data: {
-        callerId: client.userId,
-        callerName: callerName || client.userId,
-        roomId,
-        callType,
-        timestamp: new Date().toISOString(),
-      },
-    });
-
-    sendMessage(ws, {
-      type: 'callInitiated',
-      from: 'server',
-      to: client.userId,
-      data: {
-        targetUserId,
-        roomId,
-        status: 'ringing',
-      },
-    });
-
-    console.log(
-      `✅ Notification d'appel envoyée à ${targetUserId} de ${client.userId}`
-    );
-  } else {
+  if (!targetSocket) {
     sendError(ws, `Utilisateur ${targetUserId} hors ligne`);
     console.log(`❌ Utilisateur ${targetUserId} introuvable pour appel`);
+    return;
   }
+
+  sendMessage(targetSocket, {
+    type: 'incomingCall',
+    from: client.userId,
+    to: targetUserId,
+    data: {
+      callId,
+      roomId: channelName,
+      channelName,
+      callerId: client.userId,
+      callerName,
+      targetUserId,
+      callType,
+      timestamp: new Date().toISOString(),
+    },
+  });
+
+  sendMessage(ws, {
+    type: 'callInitiated',
+    from: 'server',
+    to: client.userId,
+    data: {
+      targetUserId,
+      callId,
+      roomId: channelName,
+      channelName,
+      status: 'ringing',
+      timestamp: new Date().toISOString(),
+    },
+  });
+
+  console.log(
+    `✅ Notification d'appel envoyée à ${targetUserId} de ${client.userId}`
+  );
 }
 
 function handleHeartbeat(ws) {
