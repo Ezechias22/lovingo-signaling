@@ -179,6 +179,21 @@ function ensureHostAccess(req, room) {
   };
 }
 
+function syncRoomStats(room) {
+  if (!room) return;
+
+  const currentCount = getRoomViewerCount(room);
+  room.stats = room.stats || {};
+  room.stats.totalViewers = Math.max(
+    safeNumber(room.stats.totalViewers, 0),
+    currentCount
+  );
+  room.stats.peakViewers = Math.max(
+    safeNumber(room.stats.peakViewers, 0),
+    currentCount
+  );
+}
+
 function terminateLiveRoom(roomId, endedByUserId = null) {
   const room = liveRooms.get(roomId);
   if (!room) return null;
@@ -258,7 +273,10 @@ router.get('/live/rooms', async (req, res) => {
   try {
     const roomsList = Array.from(liveRooms.values())
       .filter((room) => room && room.isActive === true)
-      .map(serializeRoom)
+      .map((room) => {
+        syncRoomStats(room);
+        return serializeRoom(room);
+      })
       .sort((a, b) => {
         const aTrending = a.isTrending ? 1 : 0;
         const bTrending = b.isTrending ? 1 : 0;
@@ -364,6 +382,8 @@ router.get('/live/rooms/:roomId', async (req, res) => {
       return res.status(404).json({ error: 'Room introuvable' });
     }
 
+    syncRoomStats(room);
+
     return res.status(200).json(serializeRoom(room));
   } catch (error) {
     console.error('❌ Erreur get room:', error);
@@ -392,7 +412,10 @@ router.post('/live/rooms/:roomId/end', async (req, res) => {
 
     const alternativeRooms = Array.from(liveRooms.values())
       .filter((item) => item && item.roomId !== roomId && item.isActive === true)
-      .map(serializeRoom)
+      .map((item) => {
+        syncRoomStats(item);
+        return serializeRoom(item);
+      })
       .sort((a, b) => (b.viewerCount || 0) - (a.viewerCount || 0))
       .slice(0, 20);
 
@@ -462,7 +485,14 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
       deviceId,
     });
 
-    if (safeRole === 'audience') {
+    if (safeRole === 'host') {
+      room.hostId = realUserId;
+      room.hostUsername = displayName;
+      room.hostPhotoUrl = resolvedPhotoUrl;
+      room.isActive = true;
+      removeUserFromSet(room.guests, realUserId);
+      removeUserFromSet(room.viewers, realUserId);
+    } else if (safeRole === 'audience') {
       removeUserFromSet(room.guests, realUserId);
       removeUserFromSet(room.viewers, realUserId);
       room.viewers.add(uniqueIdentity);
@@ -494,19 +524,7 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
       liveJoinRequests.set(roomId, requests);
     }
 
-    const currentLiveCount =
-      (room.viewers instanceof Set ? room.viewers.size : 0) +
-      (room.guests instanceof Set ? room.guests.size : 0) +
-      1;
-
-    room.stats.totalViewers = Math.max(
-      safeNumber(room?.stats?.totalViewers, 0),
-      currentLiveCount
-    );
-    room.stats.peakViewers = Math.max(
-      safeNumber(room?.stats?.peakViewers, 0),
-      currentLiveCount
-    );
+    syncRoomStats(room);
 
     const tokenData = await createLiveKitToken({
       roomId,
@@ -1041,6 +1059,8 @@ router.post('/live/rooms/:roomId/moderation/remove-guest', async (req, res) => {
       })
     );
 
+    syncRoomStats(room);
+
     broadcastToRoom(roomId, {
       type: 'liveGuestRemoved',
       from: 'server',
@@ -1118,6 +1138,8 @@ router.post('/live/rooms/:roomId/moderation/block', async (req, res) => {
       }
     }
     liveJoinRequests.set(roomId, requests);
+
+    syncRoomStats(room);
 
     broadcastToRoom(roomId, {
       type: 'liveUserBlocked',

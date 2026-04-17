@@ -8,11 +8,54 @@ function extractUserIdFromRequest(req) {
     const host = req.headers.host || 'localhost';
     const url = new URL(req.url || '/', `http://${host}`);
     const userId = url.searchParams.get('userId');
-    return userId ? String(userId) : null;
+    return userId ? String(userId).trim() : null;
   } catch (error) {
     console.error('❌ Erreur lecture userId depuis URL websocket:', error);
     return null;
   }
+}
+
+function getClientIp(req) {
+  const forwardedFor = req.headers['x-forwarded-for'];
+  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
+    return forwardedFor.split(',')[0].trim();
+  }
+
+  return (
+    req.connection?.remoteAddress ||
+    req.socket?.remoteAddress ||
+    'Unknown'
+  );
+}
+
+function startHeartbeatInterval(wss) {
+  return setInterval(() => {
+    for (const ws of wss.clients) {
+      if (ws.isAlive === false) {
+        const client = clients.get(ws);
+        console.warn(
+          `⚠️ Socket inactif, terminaison: ${client?.userId || client?.id || 'unknown'}`
+        );
+
+        try {
+          ws.terminate();
+        } catch (_) {}
+
+        continue;
+      }
+
+      ws.isAlive = false;
+
+      try {
+        ws.ping();
+      } catch (error) {
+        console.error('❌ Erreur envoi ping websocket:', error);
+        try {
+          ws.terminate();
+        } catch (_) {}
+      }
+    }
+  }, 30000);
 }
 
 function createWebSocketServer(server) {
@@ -23,18 +66,19 @@ function createWebSocketServer(server) {
     maxPayload: 1024 * 1024,
   });
 
+  const heartbeatInterval = startHeartbeatInterval(wss);
+
+  wss.on('close', () => {
+    clearInterval(heartbeatInterval);
+  });
+
   wss.on('connection', (ws, req) => {
     const userAgent = req.headers['user-agent'] || 'Unknown';
-    const clientIP =
-      req.connection?.remoteAddress ||
-      req.socket?.remoteAddress ||
-      req.headers['x-forwarded-for'] ||
-      'Unknown';
-
+    const clientIP = getClientIp(req);
     const userIdFromQuery = extractUserIdFromRequest(req);
 
     console.log(
-      `📱 Nouvelle connexion: ${clientIP} (${String(userAgent).substring(0, 50)})`
+      `📱 Nouvelle connexion: ${clientIP} (${String(userAgent).substring(0, 80)})`
     );
     console.log(`🆔 userId websocket détecté: ${userIdFromQuery || 'AUCUN'}`);
 
@@ -64,7 +108,19 @@ function createWebSocketServer(server) {
 
     ws.on('message', async (data) => {
       try {
-        const message = JSON.parse(data);
+        if (!data) {
+          sendError(ws, 'Message vide');
+          return;
+        }
+
+        const raw = typeof data === 'string' ? data : data.toString();
+        const message = JSON.parse(raw);
+
+        if (!message || typeof message !== 'object') {
+          sendError(ws, 'Message invalide');
+          return;
+        }
+
         await handleMessage(ws, message);
       } catch (error) {
         console.error('❌ Erreur parsing message:', error);
@@ -72,7 +128,11 @@ function createWebSocketServer(server) {
       }
     });
 
-    ws.on('close', (code, reason) => {
+    ws.on('close', (code, reasonBuffer) => {
+      const reason =
+          typeof reasonBuffer === 'string'
+            ? reasonBuffer
+            : reasonBuffer?.toString?.() || '';
       console.log(`📱 Connexion fermée: ${code} - ${reason}`);
       handleDisconnection(ws);
     });
@@ -90,7 +150,7 @@ function createWebSocketServer(server) {
         clientId: clientInfo.id,
         userId: clientInfo.userId,
         serverTime: new Date().toISOString(),
-        version: '2.1.1',
+        version: '2.2.0',
       },
     });
 
