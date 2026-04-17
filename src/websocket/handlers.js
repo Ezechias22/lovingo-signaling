@@ -79,7 +79,7 @@ function syncLiveStats(roomId) {
   liveRoom.stats = liveRoom.stats || {};
   liveRoom.stats.peakViewers = Math.max(
     Number(liveRoom.stats.peakViewers || 0),
-    viewerCount + guestCount
+    viewerCount + guestCount + (liveRoom.isActive === false ? 0 : 1)
   );
 
   broadcastToRoom(roomId, {
@@ -152,6 +152,67 @@ function terminateLiveRoom(roomId, endedByUserId = null) {
   }
 
   console.log(`🔴 Room live terminée: ${roomId}`);
+}
+
+function getRoomSockets(roomId) {
+  const room = rooms.get(roomId);
+  if (!(room instanceof Set)) return [];
+  return Array.from(room);
+}
+
+function getOtherSocketsInRoom(roomId, senderSocket) {
+  return getRoomSockets(roomId).filter((socket) => socket !== senderSocket);
+}
+
+function getRoomPeers(ws, roomId) {
+  const peers = [];
+
+  for (const socket of getOtherSocketsInRoom(roomId, ws)) {
+    const peerClient = clients.get(socket);
+    if (!peerClient) continue;
+    peers.push({ socket, client: peerClient });
+  }
+
+  return peers;
+}
+
+function findPeerSocketInRoom(roomId, userId, excludeSocket = null) {
+  const safeUserId = String(userId || '').trim();
+  if (!safeUserId) return null;
+
+  for (const socket of getRoomSockets(roomId)) {
+    if (excludeSocket && socket === excludeSocket) continue;
+
+    const peerClient = clients.get(socket);
+    if (!peerClient?.userId) continue;
+
+    if (String(peerClient.userId) === safeUserId) {
+      return socket;
+    }
+  }
+
+  return null;
+}
+
+function buildJoinAck(client, roomId, room, peerClients, callType) {
+  return {
+    type: 'roomJoined',
+    from: 'server',
+    to: client.userId || client.id,
+    data: {
+      roomId,
+      participantCount: room.size,
+      isHost: client.isHost,
+      callType,
+      peers: peerClients.map((item) => ({
+        userId: item.client.userId || null,
+        clientId: item.client.id,
+        isHost: item.client.isHost === true,
+        liveRole: item.client.liveRole || null,
+      })),
+      shouldCreateOffer: peerClients.length > 0,
+    },
+  };
 }
 
 async function handleMessage(ws, message) {
@@ -268,6 +329,10 @@ async function handleJoinRoom(ws, message) {
         ? 'audience'
         : null;
 
+  const peerClients = getRoomPeers(ws, roomId);
+
+  sendMessage(ws, buildJoinAck(client, roomId, room, peerClients, callType));
+
   broadcastToRoom(
     roomId,
     {
@@ -284,18 +349,6 @@ async function handleJoinRoom(ws, message) {
     },
     ws
   );
-
-  sendMessage(ws, {
-    type: 'roomJoined',
-    from: 'server',
-    to: client.userId || client.id,
-    data: {
-      roomId,
-      participantCount: room.size,
-      isHost: client.isHost,
-      callType,
-    },
-  });
 
   if (callType === 'live') {
     await handleLiveRoomJoin(ws, roomId, metadata);
@@ -378,25 +431,78 @@ async function handleLeaveRoom(ws, message) {
 
 async function handleWebRTCSignaling(ws, message) {
   const client = clients.get(ws);
-  const roomId = client.roomId;
+  const roomId =
+    client?.roomId || String(message.data?.roomId || '').trim();
 
   if (!roomId) {
     sendError(ws, 'Pas dans une room pour le signaling');
     return;
   }
 
-  const enrichedMessage = {
+  const peers = getRoomPeers(ws, roomId);
+  if (peers.length === 0) {
+    console.warn(`⚠️ Aucun peer disponible dans la room ${roomId} pour ${message.type}`);
+    return;
+  }
+
+  const explicitTargetUserId =
+    String(message.to || message.data?.targetUserId || message.data?.toUserId || '').trim();
+
+  const enrichedBase = {
     ...message,
     data: {
       ...message.data,
+      roomId,
       timestamp: new Date().toISOString(),
       fromUserId: client.userId,
     },
   };
 
-  broadcastToRoom(roomId, enrichedMessage, ws);
+  let targetSocket = null;
+
+  if (explicitTargetUserId && explicitTargetUserId !== 'room') {
+    targetSocket = findPeerSocketInRoom(roomId, explicitTargetUserId, ws);
+    if (!targetSocket) {
+      console.warn(
+        `⚠️ Peer cible ${explicitTargetUserId} introuvable dans ${roomId}, fallback room relay`
+      );
+    }
+  }
+
+  if (targetSocket) {
+    sendMessage(targetSocket, {
+      ...enrichedBase,
+      to: explicitTargetUserId,
+    });
+
+    console.log(
+      `🔄 Signal ${message.type} ciblé ${client.userId} -> ${explicitTargetUserId} dans ${roomId}`
+    );
+    return;
+  }
+
+  if (peers.length === 1) {
+    const onlyPeer = peers[0];
+    sendMessage(onlyPeer.socket, {
+      ...enrichedBase,
+      to: onlyPeer.client.userId || onlyPeer.client.id,
+    });
+
+    console.log(
+      `🔄 Signal ${message.type} relayé 1:1 dans ${roomId} par ${client.userId}`
+    );
+    return;
+  }
+
+  for (const peer of peers) {
+    sendMessage(peer.socket, {
+      ...enrichedBase,
+      to: peer.client.userId || peer.client.id,
+    });
+  }
+
   console.log(
-    `🔄 Signal ${message.type} relayé dans ${roomId} par ${client.userId}`
+    `🔄 Signal ${message.type} relayé à ${peers.length} peers dans ${roomId} par ${client.userId}`
   );
 }
 
@@ -732,9 +838,16 @@ async function handleInitiateCall(ws, message) {
   ).trim();
   const callType = String(message.data?.callType || 'audio').trim();
 
-  const callId = String(message.data?.callId || '').trim();
+  const callId = String(
+    message.data?.callId || message.data?.metadata?.callId || ''
+  ).trim();
+
   const channelName = String(
-    message.data?.channelName || message.data?.roomId || callId
+    message.data?.channelName ||
+      message.data?.roomId ||
+      message.data?.metadata?.channelName ||
+      message.data?.metadata?.roomId ||
+      callId
   ).trim();
 
   console.log(`📞 Tentative d'appel de ${client.userId} vers ${targetUserId}`);
