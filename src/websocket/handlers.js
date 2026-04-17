@@ -194,6 +194,12 @@ async function handleMessage(ws, message) {
       case 'initiateCall':
         await handleInitiateCall(ws, message);
         break;
+      case 'callAccepted':
+        await handleCallAccepted(ws, message);
+        break;
+      case 'callDeclined':
+        await handleCallDeclined(ws, message);
+        break;
       case 'ping':
         sendMessage(ws, {
           type: 'pong',
@@ -802,6 +808,100 @@ async function handleInitiateCall(ws, message) {
   console.log(
     `✅ Notification d'appel envoyée à ${targetUserId} de ${client.userId}`
   );
+}
+
+async function handleCallAccepted(ws, message) {
+  const client = clients.get(ws);
+
+  const callerId = String(
+    message.data?.callerId || message.to || ''
+  ).trim();
+  const callId = String(message.data?.callId || '').trim();
+  const channelName = String(
+    message.data?.channelName || message.data?.roomId || callId
+  ).trim();
+
+  if (!client?.userId) {
+    sendError(ws, 'Utilisateur répondant non identifié');
+    return;
+  }
+
+  if (!callerId) {
+    sendError(ws, 'callerId requis pour callAccepted');
+    return;
+  }
+
+  const callerClient = findClientByUserId(callerId);
+  const callerSocket = getSocketFromClientLookup(callerClient);
+
+  if (!callerSocket) {
+    sendError(ws, `Caller ${callerId} introuvable`);
+    return;
+  }
+
+  sendMessage(callerSocket, {
+    type: 'callAccepted',
+    from: client.userId,
+    to: callerId,
+    data: {
+      callId,
+      roomId: channelName,
+      channelName,
+      callerId,
+      acceptedBy: client.userId,
+      timestamp: new Date().toISOString(),
+    },
+  });
+
+  console.log(`✅ callAccepted relayé vers ${callerId}`);
+}
+
+async function handleCallDeclined(ws, message) {
+  const client = clients.get(ws);
+
+  const callerId = String(
+    message.data?.callerId || message.to || ''
+  ).trim();
+  const callId = String(message.data?.callId || '').trim();
+  const channelName = String(
+    message.data?.channelName || message.data?.roomId || callId
+  ).trim();
+  const reason = String(message.data?.reason || 'declined').trim();
+
+  if (!client?.userId) {
+    sendError(ws, 'Utilisateur répondant non identifié');
+    return;
+  }
+
+  if (!callerId) {
+    sendError(ws, 'callerId requis pour callDeclined');
+    return;
+  }
+
+  const callerClient = findClientByUserId(callerId);
+  const callerSocket = getSocketFromClientLookup(callerClient);
+
+  if (!callerSocket) {
+    sendError(ws, `Caller ${callerId} introuvable`);
+    return;
+  }
+
+  sendMessage(callerSocket, {
+    type: 'callDeclined',
+    from: client.userId,
+    to: callerId,
+    data: {
+      callId,
+      roomId: channelName,
+      channelName,
+      callerId,
+      declinedBy: client.userId,
+      reason,
+      timestamp: new Date().toISOString(),
+    },
+  });
+
+  console.log(`✅ callDeclined relayé vers ${callerId}`);
 }
 
 function handleHeartbeat(ws) {
