@@ -14,17 +14,21 @@ function generateClientId() {
 }
 
 function sendMessage(ws, message) {
-  if (ws.readyState === WebSocket.OPEN) {
-    try {
-      ws.send(JSON.stringify(message));
-    } catch (error) {
-      console.error('❌ Erreur envoi message:', error);
-    }
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+
+  try {
+    ws.send(JSON.stringify(message));
+    return true;
+  } catch (error) {
+    console.error('❌ Erreur envoi message:', error);
+    return false;
   }
 }
 
 function sendError(ws, error) {
-  sendMessage(ws, {
+  return sendMessage(ws, {
     type: 'error',
     from: 'server',
     to: 'client',
@@ -37,32 +41,58 @@ function sendError(ws, error) {
 
 function broadcastToRoom(roomId, message, excludeWs = null) {
   if (!rooms.has(roomId)) {
-    return;
+    return 0;
   }
 
   const room = rooms.get(roomId);
   let sentCount = 0;
 
-  room.forEach((ws) => {
-    if (ws !== excludeWs && ws.readyState === WebSocket.OPEN) {
-      sendMessage(ws, message);
+  for (const ws of room) {
+    if (ws === excludeWs) continue;
+    if (ws.readyState !== WebSocket.OPEN) continue;
+
+    const sent = sendMessage(ws, message);
+    if (sent) {
       sentCount++;
     }
-  });
+  }
 
   console.log(`📡 Message broadcast dans ${roomId} à ${sentCount} clients`);
+  return sentCount;
 }
 
 function findClientByUserId(userId) {
+  const safeUserId = String(userId || '').trim();
+  if (!safeUserId) {
+    return null;
+  }
+
+  let bestMatch = null;
+
   for (const [ws, client] of clients.entries()) {
-    if (
-      String(client.userId) === String(userId) &&
-      ws.readyState === WebSocket.OPEN
-    ) {
-      return { ws, client };
+    if (!client) continue;
+
+    const currentUserId = String(client.userId || '').trim();
+    if (currentUserId !== safeUserId) continue;
+
+    if (ws.readyState !== WebSocket.OPEN) {
+      continue;
+    }
+
+    if (!bestMatch) {
+      bestMatch = { ws, client };
+      continue;
+    }
+
+    const currentConnectedAt = new Date(client.connectedAt || 0).getTime();
+    const bestConnectedAt = new Date(bestMatch.client.connectedAt || 0).getTime();
+
+    if (currentConnectedAt >= bestConnectedAt) {
+      bestMatch = { ws, client };
     }
   }
-  return null;
+
+  return bestMatch;
 }
 
 function _safeString(value) {
