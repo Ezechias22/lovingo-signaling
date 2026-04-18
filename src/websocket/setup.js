@@ -3,6 +3,9 @@ const { clients } = require('../state/store');
 const { generateClientId, sendMessage, sendError } = require('../utils/helpers');
 const { handleMessage, handleDisconnection } = require('./handlers');
 
+const HEARTBEAT_INTERVAL_MS = 30000;
+const HEARTBEAT_TIMEOUT_MS = 90000;
+
 function extractUserIdFromRequest(req) {
   try {
     const host = req.headers.host || 'localhost';
@@ -28,19 +31,46 @@ function getClientIp(req) {
   );
 }
 
+function markSocketAlive(ws) {
+  ws.isAlive = true;
+
+  const client = clients.get(ws);
+  if (client) {
+    client.lastHeartbeat = new Date();
+  }
+}
+
 function startHeartbeatInterval(wss) {
   return setInterval(() => {
-    for (const ws of wss.clients) {
-      if (ws.isAlive === false) {
-        const client = clients.get(ws);
-        console.warn(
-          `⚠️ Socket inactif, terminaison: ${client?.userId || client?.id || 'unknown'}`
-        );
+    const now = Date.now();
+    let aliveClients = 0;
 
+    for (const ws of wss.clients) {
+      const client = clients.get(ws);
+
+      if (ws.readyState !== WebSocket.OPEN) {
+        console.warn(
+          `⚠️ Socket non ouverte, terminaison: ${client?.userId || client?.id || 'unknown'}`
+        );
         try {
           ws.terminate();
         } catch (_) {}
+        continue;
+      }
 
+      const lastHeartbeatMs = client?.lastHeartbeat
+        ? new Date(client.lastHeartbeat).getTime()
+        : 0;
+
+      const silenceDuration = lastHeartbeatMs ? now - lastHeartbeatMs : HEARTBEAT_TIMEOUT_MS + 1;
+
+      if (ws.isAlive === false && silenceDuration > HEARTBEAT_TIMEOUT_MS) {
+        console.warn(
+          `💀 Connexion WebSocket morte détectée, terminaison...`
+        );
+        try {
+          ws.terminate();
+        } catch (_) {}
         continue;
       }
 
@@ -48,6 +78,7 @@ function startHeartbeatInterval(wss) {
 
       try {
         ws.ping();
+        aliveClients += 1;
       } catch (error) {
         console.error('❌ Erreur envoi ping websocket:', error);
         try {
@@ -55,7 +86,9 @@ function startHeartbeatInterval(wss) {
         } catch (_) {}
       }
     }
-  }, 30000);
+
+    console.log(`♻️ Ping WebSocket envoyé à ${aliveClients} clients`);
+  }, HEARTBEAT_INTERVAL_MS);
 }
 
 function createWebSocketServer(server) {
@@ -95,19 +128,23 @@ function createWebSocketServer(server) {
     };
 
     clients.set(ws, clientInfo);
-
     ws.isAlive = true;
 
     ws.on('pong', () => {
-      ws.isAlive = true;
-      const client = clients.get(ws);
-      if (client) {
-        client.lastHeartbeat = new Date();
-      }
+      markSocketAlive(ws);
+    });
+
+    ws.on('ping', () => {
+      markSocketAlive(ws);
+      try {
+        ws.pong();
+      } catch (_) {}
     });
 
     ws.on('message', async (data) => {
       try {
+        markSocketAlive(ws);
+
         if (!data) {
           sendError(ws, 'Message vide');
           return;
@@ -130,9 +167,10 @@ function createWebSocketServer(server) {
 
     ws.on('close', (code, reasonBuffer) => {
       const reason =
-          typeof reasonBuffer === 'string'
-            ? reasonBuffer
-            : reasonBuffer?.toString?.() || '';
+        typeof reasonBuffer === 'string'
+          ? reasonBuffer
+          : reasonBuffer?.toString?.() || '';
+
       console.log(`📱 Connexion fermée: ${code} - ${reason}`);
       handleDisconnection(ws);
     });
@@ -150,7 +188,7 @@ function createWebSocketServer(server) {
         clientId: clientInfo.id,
         userId: clientInfo.userId,
         serverTime: new Date().toISOString(),
-        version: '2.2.0',
+        version: '2.2.1',
       },
     });
 

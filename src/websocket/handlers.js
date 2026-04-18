@@ -225,6 +225,7 @@ async function handleMessage(ws, message) {
 
   if (message.from && message.from !== 'server') {
     client.userId = String(message.from);
+    client.lastHeartbeat = new Date();
   }
 
   try {
@@ -881,28 +882,33 @@ async function handleInitiateCall(ws, message) {
 
   const targetClient = findClientByUserId(targetUserId);
   const targetSocket = getSocketFromClientLookup(targetClient);
+  const targetOnline = Boolean(targetSocket);
 
-  if (!targetSocket) {
-    sendError(ws, `Utilisateur ${targetUserId} hors ligne`);
-    console.log(`❌ Utilisateur ${targetUserId} introuvable pour appel`);
-    return;
+  if (targetSocket) {
+    sendMessage(targetSocket, {
+      type: 'incomingCall',
+      from: client.userId,
+      to: targetUserId,
+      data: {
+        callId,
+        roomId: channelName,
+        channelName,
+        callerId: client.userId,
+        callerName,
+        targetUserId,
+        callType,
+        timestamp: new Date().toISOString(),
+      },
+    });
+
+    console.log(
+      `✅ Notification d'appel envoyée à ${targetUserId} de ${client.userId}`
+    );
+  } else {
+    console.log(
+      `⚠️ Utilisateur ${targetUserId} non connecté au websocket pour le moment. Appel laissé à Firestore / notifications.`
+    );
   }
-
-  sendMessage(targetSocket, {
-    type: 'incomingCall',
-    from: client.userId,
-    to: targetUserId,
-    data: {
-      callId,
-      roomId: channelName,
-      channelName,
-      callerId: client.userId,
-      callerName,
-      targetUserId,
-      callType,
-      timestamp: new Date().toISOString(),
-    },
-  });
 
   sendMessage(ws, {
     type: 'callInitiated',
@@ -914,13 +920,11 @@ async function handleInitiateCall(ws, message) {
       roomId: channelName,
       channelName,
       status: 'ringing',
+      targetOnline,
+      fallbackMode: !targetOnline,
       timestamp: new Date().toISOString(),
     },
   });
-
-  console.log(
-    `✅ Notification d'appel envoyée à ${targetUserId} de ${client.userId}`
-  );
 }
 
 async function handleCallAccepted(ws, message) {
@@ -948,7 +952,7 @@ async function handleCallAccepted(ws, message) {
   const callerSocket = getSocketFromClientLookup(callerClient);
 
   if (!callerSocket) {
-    sendError(ws, `Caller ${callerId} introuvable`);
+    console.warn(`⚠️ Caller ${callerId} introuvable pour callAccepted`);
     return;
   }
 
@@ -995,7 +999,7 @@ async function handleCallDeclined(ws, message) {
   const callerSocket = getSocketFromClientLookup(callerClient);
 
   if (!callerSocket) {
-    sendError(ws, `Caller ${callerId} introuvable`);
+    console.warn(`⚠️ Caller ${callerId} introuvable pour callDeclined`);
     return;
   }
 
@@ -1021,6 +1025,7 @@ function handleHeartbeat(ws) {
   const client = clients.get(ws);
   if (client) {
     client.lastHeartbeat = new Date();
+    ws.isAlive = true;
   }
 
   sendMessage(ws, {
