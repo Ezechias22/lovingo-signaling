@@ -4,7 +4,7 @@ const { generateClientId, sendMessage, sendError } = require('../utils/helpers')
 const { handleMessage, handleDisconnection } = require('./handlers');
 
 const HEARTBEAT_INTERVAL_MS = 30000;
-const HEARTBEAT_TIMEOUT_MS = 90000;
+const HEARTBEAT_TIMEOUT_MS = 180000;
 
 function extractUserIdFromRequest(req) {
   try {
@@ -24,11 +24,7 @@ function getClientIp(req) {
     return forwardedFor.split(',')[0].trim();
   }
 
-  return (
-    req.connection?.remoteAddress ||
-    req.socket?.remoteAddress ||
-    'Unknown'
-  );
+  return req.connection?.remoteAddress || req.socket?.remoteAddress || 'Unknown';
 }
 
 function markSocketAlive(ws) {
@@ -40,37 +36,37 @@ function markSocketAlive(ws) {
   }
 }
 
+function safeTerminateSocket(ws, reason = 'unknown') {
+  try {
+    const client = clients.get(ws);
+    console.warn(
+      `💀 Terminaison socket: ${client?.userId || client?.id || 'unknown'} | raison=${reason}`
+    );
+    ws.terminate();
+  } catch (_) {}
+}
+
 function startHeartbeatInterval(wss) {
   return setInterval(() => {
     const now = Date.now();
-    let aliveClients = 0;
+    let pingedClients = 0;
 
     for (const ws of wss.clients) {
       const client = clients.get(ws);
 
       if (ws.readyState !== WebSocket.OPEN) {
-        console.warn(
-          `⚠️ Socket non ouverte, terminaison: ${client?.userId || client?.id || 'unknown'}`
-        );
-        try {
-          ws.terminate();
-        } catch (_) {}
+        safeTerminateSocket(ws, 'not_open');
         continue;
       }
 
       const lastHeartbeatMs = client?.lastHeartbeat
         ? new Date(client.lastHeartbeat).getTime()
-        : 0;
+        : now;
 
-      const silenceDuration = lastHeartbeatMs ? now - lastHeartbeatMs : HEARTBEAT_TIMEOUT_MS + 1;
+      const silenceDuration = now - lastHeartbeatMs;
 
       if (ws.isAlive === false && silenceDuration > HEARTBEAT_TIMEOUT_MS) {
-        console.warn(
-          `💀 Connexion WebSocket morte détectée, terminaison...`
-        );
-        try {
-          ws.terminate();
-        } catch (_) {}
+        safeTerminateSocket(ws, `heartbeat_timeout_${silenceDuration}ms`);
         continue;
       }
 
@@ -78,16 +74,14 @@ function startHeartbeatInterval(wss) {
 
       try {
         ws.ping();
-        aliveClients += 1;
+        pingedClients += 1;
       } catch (error) {
         console.error('❌ Erreur envoi ping websocket:', error);
-        try {
-          ws.terminate();
-        } catch (_) {}
+        safeTerminateSocket(ws, 'ping_failed');
       }
     }
 
-    console.log(`♻️ Ping WebSocket envoyé à ${aliveClients} clients`);
+    console.log(`♻️ Ping WebSocket envoyé à ${pingedClients} clients`);
   }, HEARTBEAT_INTERVAL_MS);
 }
 
@@ -129,6 +123,10 @@ function createWebSocketServer(server) {
 
     clients.set(ws, clientInfo);
     ws.isAlive = true;
+
+    ws.on('open', () => {
+      markSocketAlive(ws);
+    });
 
     ws.on('pong', () => {
       markSocketAlive(ws);
@@ -188,7 +186,9 @@ function createWebSocketServer(server) {
         clientId: clientInfo.id,
         userId: clientInfo.userId,
         serverTime: new Date().toISOString(),
-        version: '2.2.1',
+        version: '2.3.0',
+        heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+        heartbeatTimeoutMs: HEARTBEAT_TIMEOUT_MS,
       },
     });
 

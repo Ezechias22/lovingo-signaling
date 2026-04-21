@@ -1,5 +1,10 @@
-const { rooms, clients, liveRooms, liveJoinRequests } = require('../state/store');
-const { MAX_CLIENTS_PER_ROOM } = require('../config');
+const {
+  rooms,
+  clients,
+  liveRooms,
+  liveJoinRequests,
+} = require('../state/store');
+const { MAX_CLIENTS_PER_ROOM, RENDER_URL } = require('../config');
 const {
   sendMessage,
   sendError,
@@ -8,6 +13,13 @@ const {
   ensureLiveRoom,
   generateClientId,
 } = require('../utils/helpers');
+
+let pushService = null;
+try {
+  pushService = require('../services/push.service');
+} catch (error) {
+  console.warn('⚠️ Push service indisponible dans websocket handlers');
+}
 
 function getClientUserId(client) {
   return client?.userId ? String(client.userId) : '';
@@ -213,6 +225,66 @@ function buildJoinAck(client, roomId, room, peerClients, callType) {
       shouldCreateOffer: peerClients.length > 0,
     },
   };
+}
+
+function buildIncomingCallPayload({
+  client,
+  targetUserId,
+  callerName,
+  callType,
+  callId,
+  channelName,
+}) {
+  return {
+    callId,
+    roomId: channelName,
+    channelName,
+    callerId: client.userId,
+    callerName,
+    targetUserId,
+    callType,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+async function notifyOfflineTarget({
+  client,
+  targetUserId,
+  callerName,
+  callType,
+  callId,
+  channelName,
+}) {
+  if (!pushService || typeof pushService.sendToUser !== 'function') {
+    console.warn('⚠️ Push service indisponible pour fallback incoming_call');
+    return;
+  }
+
+  try {
+    const actionUrl = '/login';
+
+    const result = await pushService.sendToUser({
+      user_id: targetUserId,
+      title: callType === 'video' ? 'Appel vidéo entrant 📞' : 'Appel audio entrant 📞',
+      body: `${callerName} vous appelle`,
+      data: {
+        type: 'incoming_call',
+        call_id: callId,
+        caller_id: client.userId,
+        caller_name: callerName,
+        call_type: callType,
+        channel_name: channelName,
+        action_url: actionUrl,
+      },
+    });
+
+    console.log(
+      `🔔 Fallback push incoming_call vers ${targetUserId}:`,
+      JSON.stringify(result)
+    );
+  } catch (error) {
+    console.error('❌ Erreur envoi push incoming_call:', error);
+  }
 }
 
 async function handleMessage(ws, message) {
@@ -443,6 +515,16 @@ async function handleWebRTCSignaling(ws, message) {
   const peers = getRoomPeers(ws, roomId);
   if (peers.length === 0) {
     console.warn(`⚠️ Aucun peer disponible dans la room ${roomId} pour ${message.type}`);
+    sendMessage(ws, {
+      type: 'waitingPeer',
+      from: 'server',
+      to: client.userId || client.id,
+      data: {
+        roomId,
+        originalType: message.type,
+        timestamp: new Date().toISOString(),
+      },
+    });
     return;
   }
 
@@ -880,6 +962,15 @@ async function handleInitiateCall(ws, message) {
     return;
   }
 
+  const incomingCallPayload = buildIncomingCallPayload({
+    client,
+    targetUserId,
+    callerName,
+    callType,
+    callId,
+    channelName,
+  });
+
   const targetClient = findClientByUserId(targetUserId);
   const targetSocket = getSocketFromClientLookup(targetClient);
   const targetOnline = Boolean(targetSocket);
@@ -889,25 +980,25 @@ async function handleInitiateCall(ws, message) {
       type: 'incomingCall',
       from: client.userId,
       to: targetUserId,
-      data: {
-        callId,
-        roomId: channelName,
-        channelName,
-        callerId: client.userId,
-        callerName,
-        targetUserId,
-        callType,
-        timestamp: new Date().toISOString(),
-      },
+      data: incomingCallPayload,
     });
 
     console.log(
-      `✅ Notification d'appel envoyée à ${targetUserId} de ${client.userId}`
+      `✅ Notification d'appel websocket envoyée à ${targetUserId} de ${client.userId}`
     );
   } else {
     console.log(
-      `⚠️ Utilisateur ${targetUserId} non connecté au websocket pour le moment. Appel laissé à Firestore / notifications.`
+      `⚠️ Utilisateur ${targetUserId} non connecté au websocket. Fallback push déclenché.`
     );
+
+    await notifyOfflineTarget({
+      client,
+      targetUserId,
+      callerName,
+      callType,
+      callId,
+      channelName,
+    });
   }
 
   sendMessage(ws, {
@@ -922,6 +1013,7 @@ async function handleInitiateCall(ws, message) {
       status: 'ringing',
       targetOnline,
       fallbackMode: !targetOnline,
+      websocketDelivered: targetOnline,
       timestamp: new Date().toISOString(),
     },
   });
