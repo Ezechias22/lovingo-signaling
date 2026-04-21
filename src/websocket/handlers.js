@@ -287,6 +287,32 @@ async function notifyOfflineTarget({
   }
 }
 
+function notifyExistingPeersPeerReady(roomId, joinedSocket) {
+  const joinedClient = clients.get(joinedSocket);
+  if (!joinedClient) return;
+
+  const peers = getRoomPeers(joinedSocket, roomId);
+  if (peers.length === 0) return;
+
+  for (const peer of peers) {
+    sendMessage(peer.socket, {
+      type: 'peerReady',
+      from: 'server',
+      to: peer.client.userId || peer.client.id,
+      data: {
+        roomId,
+        joinedUserId: joinedClient.userId || null,
+        joinedClientId: joinedClient.id,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  }
+
+  console.log(
+    `🚀 peerReady envoyé à ${peers.length} peer(s) dans ${roomId} après arrivée de ${joinedClient.userId || joinedClient.id}`
+  );
+}
+
 async function handleMessage(ws, message) {
   const client = clients.get(ws);
   if (!client) return;
@@ -423,6 +449,10 @@ async function handleJoinRoom(ws, message) {
     ws
   );
 
+  if (callType !== 'live' && peerClients.length > 0) {
+    notifyExistingPeersPeerReady(roomId, ws);
+  }
+
   if (callType === 'live') {
     await handleLiveRoomJoin(ws, roomId, metadata);
   }
@@ -529,7 +559,12 @@ async function handleWebRTCSignaling(ws, message) {
   }
 
   const explicitTargetUserId =
-    String(message.to || message.data?.targetUserId || message.data?.toUserId || '').trim();
+    String(
+      message.to ||
+      message.data?.targetUserId ||
+      message.data?.toUserId ||
+      ''
+    ).trim();
 
   const enrichedBase = {
     ...message,
