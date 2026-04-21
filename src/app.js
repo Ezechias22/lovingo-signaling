@@ -6,6 +6,7 @@ const webRoutes = require('./routes/web.routes');
 const paymentRoutes = require('./routes/payment.routes');
 const liveRoutes = require('./routes/live.routes');
 const systemRoutes = require('./routes/system.routes');
+const pushRoutes = require('./routes/push.routes');
 
 function createCorsOptions() {
   const allowedOrigins = new Set([
@@ -48,6 +49,9 @@ function registerRoutes(app) {
   app.use(paymentRoutes);
   app.use(liveRoutes);
   app.use(systemRoutes);
+
+  // Push notifications
+  app.use('/api/push', pushRoutes);
 }
 
 function registerErrorHandlers(app) {
