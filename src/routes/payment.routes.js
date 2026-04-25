@@ -1,4 +1,3 @@
-// signaling_server/src/routes/payment.routes.js
 const express = require('express');
 const crypto = require('crypto');
 
@@ -20,6 +19,40 @@ const COIN_PACKAGES = {
   mega: { id: 'mega', name: 'Mega Coins', coins: 125000, usd: 25, currency: 'usd' },
   vip: { id: 'vip', name: 'VIP Coins', coins: 275000, usd: 55, currency: 'usd' },
 };
+
+const FX_TO_USD = {
+  usd: 1,
+  brl: 5.1,
+  eur: 0.92,
+  gbp: 0.79,
+  cad: 1.37,
+  aud: 1.53,
+  mxn: 17.1,
+  jpy: 155,
+  inr: 83,
+};
+
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  'bif', 'clp', 'djf', 'gnf', 'jpy', 'kmf', 'krw', 'mga',
+  'pyg', 'rwf', 'ugx', 'vnd', 'vuv', 'xaf', 'xof', 'xpf'
+]);
+
+function normalizeCheckoutCurrency(value) {
+  const currency = String(value || 'usd').trim().toLowerCase();
+  if (FX_TO_USD[currency]) return currency;
+  return 'usd';
+}
+
+function convertUsdToCurrencyAmount(usd, currency) {
+  const rate = FX_TO_USD[currency] || 1;
+  const localAmount = Number(usd) * rate;
+
+  if (ZERO_DECIMAL_CURRENCIES.has(currency)) {
+    return Math.round(localAmount);
+  }
+
+  return Math.round(localAmount * 100);
+}
 
 function db() {
   return getFirestore();
@@ -488,12 +521,15 @@ router.post('/api/purchase-credits', async (req, res) => {
 
 router.post('/api/create-coin-checkout-session', async (req, res) => {
   try {
-    const { publicId, packageId, source = 'web_public_id' } = req.body;
+    const { publicId, packageId, source = 'web_public_id', currency = 'usd' } = req.body;
     const selectedPackage = COIN_PACKAGES[packageId];
 
     if (!selectedPackage) {
       return res.status(400).json({ error: 'Package coins invalide' });
     }
+
+    const checkoutCurrency = normalizeCheckoutCurrency(currency);
+    const checkoutAmount = convertUsdToCurrencyAmount(selectedPackage.usd, checkoutCurrency);
 
     const targetPublicId = normalizePublicId(publicId);
     const resolved = await resolveUserByPublicId(targetPublicId);
@@ -549,12 +585,12 @@ router.post('/api/create-coin-checkout-session', async (req, res) => {
       line_items: [
         {
           price_data: {
-            currency: selectedPackage.currency,
+            currency: checkoutCurrency,
             product_data: {
               name: `${selectedPackage.coins.toLocaleString()} Lovingo coins`,
               description: `${selectedPackage.name} - 5000 coins = 1 USD`,
             },
-            unit_amount: Math.round(selectedPackage.usd * 100),
+            unit_amount: checkoutAmount,
           },
           quantity: 1,
         },
@@ -571,6 +607,8 @@ router.post('/api/create-coin-checkout-session', async (req, res) => {
         usd: String(selectedPackage.usd),
         coinsPerUsd: String(COINS_PER_USD),
         riskScore: String(risk.score),
+        checkoutCurrency,
+        checkoutAmount: String(checkoutAmount),
       },
       payment_intent_data: {
         metadata: {
@@ -585,6 +623,8 @@ router.post('/api/create-coin-checkout-session', async (req, res) => {
           usd: String(selectedPackage.usd),
           coinsPerUsd: String(COINS_PER_USD),
           riskScore: String(risk.score),
+          checkoutCurrency,
+          checkoutAmount: String(checkoutAmount),
         },
       },
     });
@@ -597,8 +637,8 @@ router.post('/api/create-coin-checkout-session', async (req, res) => {
       packageId,
       coins: selectedPackage.coins,
       usd: selectedPackage.usd,
-      amount: Math.round(selectedPackage.usd * 100),
-      currency: selectedPackage.currency,
+      amount: checkoutAmount,
+      currency: checkoutCurrency,
       source,
       ipHash: risk.ipHash,
       userAgentHash: risk.userAgentHash,

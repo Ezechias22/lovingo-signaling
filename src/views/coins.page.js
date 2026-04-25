@@ -2,10 +2,10 @@
 
 function renderCoinsPage({ PLAYSTORE_URL }) {
   return `<!doctype html>
-<html lang="fr">
+<html lang=\"fr\">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />
   <title>Acheter des coins - Lovingo</title>
   <style>
     body {
@@ -107,26 +107,26 @@ function renderCoinsPage({ PLAYSTORE_URL }) {
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="card">
+  <div class=\"wrap\">
+    <div class=\"card\">
       <h1>💰 Acheter des coins Lovingo</h1>
       <p>
         Entrez l’ID public de l’utilisateur Lovingo, choisissez un pack, puis payez avec Stripe.
         Les coins seront ajoutés automatiquement après le paiement.
       </p>
 
-      <label for="publicId">ID public Lovingo</label>
-      <input id="publicId" placeholder="Ex: LOV123456" />
+      <label for=\"publicId\">ID public Lovingo</label>
+      <input id=\"publicId\" placeholder=\"Ex: LOV123456\" />
 
-      <div class="packages" id="packages"></div>
+      <div class=\"packages\" id=\"packages\"></div>
 
-      <button id="payBtn">Continuer vers le paiement</button>
+      <button id=\"payBtn\">Continuer vers le paiement</button>
 
-      <div class="msg" id="msg"></div>
+      <div class=\"msg\" id=\"msg\"></div>
 
-      <p style="margin-top:22px">
+      <p style=\"margin-top:22px\">
         Vous n’avez pas l’application ?
-        <a href="${PLAYSTORE_URL}" target="_blank" rel="noopener">Télécharger Lovingo sur Google Play</a>
+        <a href=\"${PLAYSTORE_URL}\" target=\"_blank\" rel=\"noopener\">Télécharger Lovingo sur Google Play</a>
       </p>
     </div>
   </div>
@@ -136,6 +136,21 @@ function renderCoinsPage({ PLAYSTORE_URL }) {
   const packagesEl = document.getElementById('packages');
   const payBtn = document.getElementById('payBtn');
   const msg = document.getElementById('msg');
+
+  function detectCurrency() {
+    const lang = navigator.language || '';
+
+    if (lang.includes('BR')) return 'brl';
+    if (lang.includes('FR') || lang.includes('DE') || lang.includes('ES') || lang.includes('IT') || lang.includes('PT')) return 'eur';
+    if (lang.includes('GB')) return 'gbp';
+    if (lang.includes('CA')) return 'cad';
+    if (lang.includes('AU')) return 'aud';
+    if (lang.includes('MX')) return 'mxn';
+    if (lang.includes('JP')) return 'jpy';
+    if (lang.includes('IN')) return 'inr';
+
+    return 'usd';
+  }
 
   function showMessage(text) {
     msg.style.display = 'block';
@@ -149,8 +164,8 @@ function renderCoinsPage({ PLAYSTORE_URL }) {
       const div = document.createElement('div');
       div.className = 'package' + (item.id === selectedPackageId ? ' active' : '');
       div.innerHTML =
-        '<div class="coins">' + item.coins.toLocaleString() + ' coins</div>' +
-        '<div class="price">' + item.usd + ' ' + item.currency.toUpperCase() + '</div>';
+        '<div class=\"coins\">' + item.coins.toLocaleString() + ' coins</div>' +
+        '<div class=\"price\">' + item.usd + ' ' + item.currency.toUpperCase() + '</div>';
 
       div.onclick = () => {
         selectedPackageId = item.id;
@@ -185,7 +200,8 @@ function renderCoinsPage({ PLAYSTORE_URL }) {
         body: JSON.stringify({
           publicId,
           packageId: selectedPackageId,
-          source: 'web_public_id'
+          source: 'web_public_id',
+          currency: detectCurrency()
         })
       });
 
@@ -212,10 +228,10 @@ function renderCoinsPage({ PLAYSTORE_URL }) {
 
 function renderCoinsSuccessPage({ PLAYSTORE_URL }) {
   return `<!doctype html>
-<html lang="fr">
+<html lang=\"fr\">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />
   <title>Paiement réussi - Lovingo</title>
   <style>
     body {
@@ -246,11 +262,11 @@ function renderCoinsSuccessPage({ PLAYSTORE_URL }) {
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="icon">✅</div>
+  <div class=\"card\">
+    <div class=\"icon\">✅</div>
     <h1>Paiement réussi</h1>
     <p>Les coins seront ajoutés automatiquement au compte Lovingo après confirmation Stripe.</p>
-    <p><a href="${PLAYSTORE_URL}" target="_blank" rel="noopener">Ouvrir Lovingo sur Google Play</a></p>
+    <p><a href=\"${PLAYSTORE_URL}\" target=\"_blank\" rel=\"noopener\">Ouvrir Lovingo sur Google Play</a></p>
   </div>
 </body>
 </html>`;
