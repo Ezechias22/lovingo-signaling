@@ -6,10 +6,12 @@ const path = require('path');
 const webRoutes = require('./routes/web.routes');
 const paymentRoutes = require('./routes/payment.routes');
 const { stripeWebhookHandler } = require('./routes/payment.routes');
+const giftRoutes = require('./routes/gift.routes');
 const liveRoutes = require('./routes/live.routes');
 const systemRoutes = require('./routes/system.routes');
 const pushRoutes = require('./routes/push.routes');
 const publicIdRoutes = require('./routes/public-id.routes');
+const fraudAdminRoutes = require('./routes/fraud-admin.routes');
 
 function createCorsOptions() {
   const allowedOrigins = new Set([
@@ -32,7 +34,12 @@ function createCorsOptions() {
       return callback(new Error('Not allowed by CORS'));
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-admin-secret'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'x-user-id',
+      'x-admin-secret',
+    ],
     credentials: false,
   };
 }
@@ -42,7 +49,6 @@ function registerCoreMiddlewares(app) {
 
   app.use(cors(createCorsOptions()));
 
-  // Stripe webhook doit recevoir le body RAW avant express.json()
   app.post(
     '/api/stripe/webhook',
     express.raw({ type: 'application/json' }),
@@ -57,7 +63,9 @@ function registerCoreMiddlewares(app) {
 function registerRoutes(app) {
   app.use(webRoutes);
   app.use(paymentRoutes);
+  app.use(giftRoutes);
   app.use(publicIdRoutes);
+  app.use(fraudAdminRoutes);
   app.use(liveRoutes);
   app.use(systemRoutes);
   app.use('/api/push', pushRoutes);
