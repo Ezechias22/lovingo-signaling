@@ -486,6 +486,142 @@ router.post('/api/purchase-credits', async (req, res) => {
   }
 });
 
+router.post('/api/create-coin-checkout-session', async (req, res) => {
+  try {
+    const { publicId, packageId, source = 'web_public_id' } = req.body;
+    const selectedPackage = COIN_PACKAGES[packageId];
+
+    if (!selectedPackage) {
+      return res.status(400).json({ error: 'Package coins invalide' });
+    }
+
+    const targetPublicId = normalizePublicId(publicId);
+    const resolved = await resolveUserByPublicId(targetPublicId);
+
+    if (!resolved) {
+      return res.status(404).json({
+        error: 'Aucun utilisateur trouvé avec cet ID public',
+      });
+    }
+
+    const targetUserId = resolved.userId;
+
+    await ensureWalletExists(targetUserId);
+
+    const risk = await computeSmartRiskScore({
+      req,
+      userId: targetUserId,
+      packageId,
+      amountUsd: selectedPackage.usd,
+    });
+
+    await logFraudEvent({
+      type: risk.allowed ? 'risk_evaluation' : 'purchase_blocked',
+      userId: targetUserId,
+      publicId: targetPublicId,
+      packageId,
+      amountUsd: selectedPackage.usd,
+      ipHash: risk.ipHash,
+      userAgentHash: risk.userAgentHash,
+      riskScore: risk.score,
+      riskReasons: risk.reasons,
+      createdAtDate: new Date(),
+    });
+
+    if (!risk.allowed) {
+      await autoBanIfNeeded({
+        userId: targetUserId,
+        ipHash: risk.ipHash,
+        reason: risk.reasons.join(','),
+      });
+
+      return res.status(403).json({
+        error: 'Transaction bloquée par sécurité',
+        riskScore: risk.score,
+      });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      success_url: `${req.protocol}://${req.get('host')}/coins/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${req.protocol}://${req.get('host')}/coins`,
+      line_items: [
+        {
+          price_data: {
+            currency: selectedPackage.currency,
+            product_data: {
+              name: `${selectedPackage.coins.toLocaleString()} Lovingo coins`,
+              description: `${selectedPackage.name} - 5000 coins = 1 USD`,
+            },
+            unit_amount: Math.round(selectedPackage.usd * 100),
+          },
+          quantity: 1,
+        },
+      ],
+      metadata: {
+        app: 'lovingo',
+        type: 'coin_purchase',
+        source,
+        userId: targetUserId,
+        publicId: targetPublicId,
+        packageId: selectedPackage.id,
+        packageName: selectedPackage.name,
+        coins: String(selectedPackage.coins),
+        usd: String(selectedPackage.usd),
+        coinsPerUsd: String(COINS_PER_USD),
+        riskScore: String(risk.score),
+      },
+      payment_intent_data: {
+        metadata: {
+          app: 'lovingo',
+          type: 'coin_purchase',
+          source,
+          userId: targetUserId,
+          publicId: targetPublicId,
+          packageId: selectedPackage.id,
+          packageName: selectedPackage.name,
+          coins: String(selectedPackage.coins),
+          usd: String(selectedPackage.usd),
+          coinsPerUsd: String(COINS_PER_USD),
+          riskScore: String(risk.score),
+        },
+      },
+    });
+
+    await db().collection('payment_intent_logs').doc(session.id).set({
+      checkoutSessionId: session.id,
+      type: 'coin_purchase',
+      userId: targetUserId,
+      publicId: targetPublicId,
+      packageId,
+      coins: selectedPackage.coins,
+      usd: selectedPackage.usd,
+      amount: Math.round(selectedPackage.usd * 100),
+      currency: selectedPackage.currency,
+      source,
+      ipHash: risk.ipHash,
+      userAgentHash: risk.userAgentHash,
+      riskScore: risk.score,
+      riskReasons: risk.reasons,
+      status: 'checkout_created',
+      createdAtDate: new Date(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return res.json({
+      url: session.url,
+      sessionId: session.id,
+    });
+  } catch (error) {
+    console.error('❌ Erreur Checkout coins:', error);
+    return res.status(400).json({
+      error: 'Erreur lors de la création Checkout',
+      details: error.message,
+    });
+  }
+});
+
 async function stripeWebhookHandler(req, res) {
   const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
   let event;

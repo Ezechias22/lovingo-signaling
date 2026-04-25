@@ -131,93 +131,81 @@ function renderCoinsPage({ PLAYSTORE_URL }) {
     </div>
   </div>
 
-  <script src="https://js.stripe.com/v3/"></script>
   <script>
-    const STRIPE_PUBLISHABLE_KEY = '${process.env.STRIPE_PUBLISHABLE_KEY || ''}';
-    const stripe = Stripe(STRIPE_PUBLISHABLE_KEY);
+  let selectedPackageId = 'popular';
+  const packagesEl = document.getElementById('packages');
+  const payBtn = document.getElementById('payBtn');
+  const msg = document.getElementById('msg');
 
-    let selectedPackageId = 'popular';
-    const packagesEl = document.getElementById('packages');
-    const payBtn = document.getElementById('payBtn');
-    const msg = document.getElementById('msg');
+  function showMessage(text) {
+    msg.style.display = 'block';
+    msg.textContent = text;
+  }
 
-    function showMessage(text) {
-      msg.style.display = 'block';
-      msg.textContent = text;
-    }
+  function renderPackages(packages) {
+    packagesEl.innerHTML = '';
 
-    function renderPackages(packages) {
-      packagesEl.innerHTML = '';
+    packages.forEach((item) => {
+      const div = document.createElement('div');
+      div.className = 'package' + (item.id === selectedPackageId ? ' active' : '');
+      div.innerHTML =
+        '<div class="coins">' + item.coins.toLocaleString() + ' coins</div>' +
+        '<div class="price">' + item.usd + ' ' + item.currency.toUpperCase() + '</div>';
 
-      packages.forEach((item) => {
-        const div = document.createElement('div');
-        div.className = 'package' + (item.id === selectedPackageId ? ' active' : '');
-        div.innerHTML = '<div class="coins">' + item.coins.toLocaleString() + ' coins</div>' +
-          '<div class="price">' + item.usd + ' ' + item.currency.toUpperCase() + '</div>';
+      div.onclick = () => {
+        selectedPackageId = item.id;
+        renderPackages(packages);
+      };
 
-        div.onclick = () => {
-          selectedPackageId = item.id;
-          renderPackages(packages);
-        };
-
-        packagesEl.appendChild(div);
-      });
-    }
-
-    async function loadPackages() {
-      const res = await fetch('/api/coin-packages');
-      const data = await res.json();
-      renderPackages(data.packages || []);
-    }
-
-    payBtn.onclick = async () => {
-      const publicId = document.getElementById('publicId').value.trim();
-
-      if (!publicId) {
-        showMessage('Veuillez entrer un ID public Lovingo.');
-        return;
-      }
-
-      payBtn.disabled = true;
-      showMessage('Création du paiement...');
-
-      try {
-        const res = await fetch('/api/create-coin-payment-intent', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            publicId,
-            packageId: selectedPackageId,
-            source: 'web_public_id'
-          })
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-          throw new Error(data.error || 'Erreur paiement');
-        }
-
-        const result = await stripe.confirmPayment({
-          clientSecret: data.clientSecret,
-          confirmParams: {
-            return_url: window.location.origin + '/coins/success'
-          }
-        });
-
-        if (result.error) {
-          throw new Error(result.error.message);
-        }
-      } catch (error) {
-        showMessage(error.message || 'Erreur inconnue');
-        payBtn.disabled = false;
-      }
-    };
-
-    loadPackages().catch(() => {
-      showMessage('Impossible de charger les packs coins.');
+      packagesEl.appendChild(div);
     });
-  </script>
+  }
+
+  async function loadPackages() {
+    const res = await fetch('/api/coin-packages');
+    const data = await res.json();
+    renderPackages(data.packages || []);
+  }
+
+  payBtn.onclick = async () => {
+    const publicId = document.getElementById('publicId').value.trim();
+
+    if (!publicId) {
+      showMessage('Veuillez entrer un ID public Lovingo.');
+      return;
+    }
+
+    payBtn.disabled = true;
+    showMessage('Redirection vers Stripe Checkout...');
+
+    try {
+      const res = await fetch('/api/create-coin-checkout-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          publicId,
+          packageId: selectedPackageId,
+          source: 'web_public_id'
+        })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Erreur paiement');
+      }
+
+      window.location.href = data.url;
+    } catch (error) {
+      showMessage(error.message || 'Erreur inconnue');
+      payBtn.disabled = false;
+    }
+  };
+
+  loadPackages().catch(() => {
+    showMessage('Impossible de charger les packs coins.');
+  });
+</script>
 </body>
 </html>`;
 }
