@@ -137,21 +137,6 @@ function renderCoinsPage({ PLAYSTORE_URL }) {
   const payBtn = document.getElementById('payBtn');
   const msg = document.getElementById('msg');
 
-  function detectCurrency() {
-    const lang = navigator.language || '';
-
-    if (lang.includes('BR')) return 'brl';
-    if (lang.includes('FR') || lang.includes('DE') || lang.includes('ES') || lang.includes('IT') || lang.includes('PT')) return 'eur';
-    if (lang.includes('GB')) return 'gbp';
-    if (lang.includes('CA')) return 'cad';
-    if (lang.includes('AU')) return 'aud';
-    if (lang.includes('MX')) return 'mxn';
-    if (lang.includes('JP')) return 'jpy';
-    if (lang.includes('IN')) return 'inr';
-
-    return 'usd';
-  }
-
   function showMessage(text) {
     msg.style.display = 'block';
     msg.textContent = text;
@@ -201,7 +186,6 @@ function renderCoinsPage({ PLAYSTORE_URL }) {
           publicId,
           packageId: selectedPackageId,
           source: 'web_public_id',
-          currency: detectCurrency()
         })
       });
 
