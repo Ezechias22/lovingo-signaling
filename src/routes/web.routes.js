@@ -10,6 +10,7 @@ const {
   renderCoinsPage,
   renderCoinsSuccessPage,
 } = require('../views/coins.page');
+const { renderFraudPage } = require('../views/fraud.page');
 
 const router = express.Router();
 
@@ -35,6 +36,10 @@ router.get('/coins', (req, res) => {
 
 router.get('/coins/success', (req, res) => {
   res.send(renderCoinsSuccessPage({ PLAYSTORE_URL }));
+});
+
+router.get('/admin/fraud', (req, res) => {
+  res.send(renderFraudPage());
 });
 
 module.exports = router;
