@@ -1,3 +1,4 @@
+// signaling_server/src/routes/payment.routes.js
 const express = require('express');
 const crypto = require('crypto');
 
@@ -20,8 +21,35 @@ const COIN_PACKAGES = {
   vip: { id: 'vip', name: 'VIP Coins', coins: 275000, usd: 55, currency: 'usd' },
 };
 
+const CHECKOUT_CURRENCIES = {
+  brl: { label: 'BRL', rateFromUsd: 5.10 },
+  usd: { label: 'USD', rateFromUsd: 1 },
+  eur: { label: 'EUR', rateFromUsd: 0.92 },
+};
+
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  'bif', 'clp', 'djf', 'gnf', 'jpy', 'kmf', 'krw', 'mga',
+  'pyg', 'rwf', 'ugx', 'vnd', 'vuv', 'xaf', 'xof', 'xpf',
+]);
+
 function db() {
   return getFirestore();
+}
+
+function normalizeCheckoutCurrency(value) {
+  const currency = String(value || '').trim().toLowerCase();
+  return CHECKOUT_CURRENCIES[currency] ? currency : 'usd';
+}
+
+function convertUsdToCheckoutAmount(usd, currency) {
+  const config = CHECKOUT_CURRENCIES[currency] || CHECKOUT_CURRENCIES.usd;
+  const localAmount = Number(usd) * config.rateFromUsd;
+
+  if (ZERO_DECIMAL_CURRENCIES.has(currency)) {
+    return Math.round(localAmount);
+  }
+
+  return Math.round(localAmount * 100);
 }
 
 function getClientIp(req) {
@@ -250,10 +278,8 @@ async function computeSmartRiskScore({ req, userId, packageId, amountUsd }) {
 
   score = Math.min(score, 100);
 
-  const allowed = score < 70;
-
   return {
-    allowed,
+    allowed: score < 70,
     score,
     ipHash,
     userAgentHash,
@@ -261,7 +287,15 @@ async function computeSmartRiskScore({ req, userId, packageId, amountUsd }) {
   };
 }
 
-async function logPaymentIntent({ paymentIntent, userId, publicId, packageId, selectedPackage, source, req, risk }) {
+async function logPaymentIntent({
+  paymentIntent,
+  userId,
+  publicId,
+  packageId,
+  selectedPackage,
+  source,
+  risk,
+}) {
   await db().collection('payment_intent_logs').doc(paymentIntent.id).set({
     paymentIntentId: paymentIntent.id,
     type: 'coin_purchase',
@@ -289,6 +323,10 @@ router.get('/api/coin-packages', (req, res) => {
       coinsPerUsd: COINS_PER_USD,
       label: '5000 coins = 1 USD',
     },
+    currencies: Object.keys(CHECKOUT_CURRENCIES).map((code) => ({
+      code,
+      label: CHECKOUT_CURRENCIES[code].label,
+    })),
     packages: Object.values(COIN_PACKAGES),
   });
 });
@@ -420,7 +458,6 @@ router.post('/api/create-coin-payment-intent', async (req, res) => {
       packageId,
       selectedPackage,
       source,
-      req,
       risk,
     });
 
@@ -487,12 +524,18 @@ router.post('/api/purchase-credits', async (req, res) => {
 
 router.post('/api/create-coin-checkout-session', async (req, res) => {
   try {
-    const { publicId, packageId, source = 'web_public_id' } = req.body;
+    const { publicId, packageId, source = 'web_public_id', currency = 'usd' } = req.body;
     const selectedPackage = COIN_PACKAGES[packageId];
 
     if (!selectedPackage) {
       return res.status(400).json({ error: 'Package coins invalide' });
     }
+
+    const checkoutCurrency = normalizeCheckoutCurrency(currency);
+    const checkoutAmount = convertUsdToCheckoutAmount(
+      selectedPackage.usd,
+      checkoutCurrency
+    );
 
     const targetPublicId = normalizePublicId(publicId);
     const resolved = await resolveUserByPublicId(targetPublicId);
@@ -542,30 +585,22 @@ router.post('/api/create-coin-checkout-session', async (req, res) => {
 
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
-
-      // Stripe détecte la monnaie locale quand c’est possible.
-      // Garde le prix de base en USD.
-      adaptive_pricing: {
-        enabled: true,
-      },
-
+      payment_method_types: ['card'],
       success_url: `${req.protocol}://${req.get('host')}/coins/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${req.protocol}://${req.get('host')}/coins`,
-
       line_items: [
         {
           price_data: {
-            currency: 'usd',
+            currency: checkoutCurrency,
             product_data: {
               name: `${selectedPackage.coins.toLocaleString()} Lovingo coins`,
               description: `${selectedPackage.name} - 5000 coins = 1 USD`,
             },
-            unit_amount: Math.round(selectedPackage.usd * 100),
+            unit_amount: checkoutAmount,
           },
           quantity: 1,
         },
       ],
-
       metadata: {
         app: 'lovingo',
         type: 'coin_purchase',
@@ -578,8 +613,9 @@ router.post('/api/create-coin-checkout-session', async (req, res) => {
         usd: String(selectedPackage.usd),
         coinsPerUsd: String(COINS_PER_USD),
         riskScore: String(risk.score),
+        checkoutCurrency,
+        checkoutAmount: String(checkoutAmount),
       },
-
       payment_intent_data: {
         metadata: {
           app: 'lovingo',
@@ -593,6 +629,8 @@ router.post('/api/create-coin-checkout-session', async (req, res) => {
           usd: String(selectedPackage.usd),
           coinsPerUsd: String(COINS_PER_USD),
           riskScore: String(risk.score),
+          checkoutCurrency,
+          checkoutAmount: String(checkoutAmount),
         },
       },
     });
@@ -605,8 +643,8 @@ router.post('/api/create-coin-checkout-session', async (req, res) => {
       packageId,
       coins: selectedPackage.coins,
       usd: selectedPackage.usd,
-      amount: Math.round(selectedPackage.usd * 100),
-      currency: 'usd',
+      amount: checkoutAmount,
+      currency: checkoutCurrency,
       source,
       ipHash: risk.ipHash,
       userAgentHash: risk.userAgentHash,
@@ -620,6 +658,8 @@ router.post('/api/create-coin-checkout-session', async (req, res) => {
     return res.json({
       url: session.url,
       sessionId: session.id,
+      currency: checkoutCurrency,
+      amount: checkoutAmount,
     });
   } catch (error) {
     console.error('❌ Erreur Checkout coins:', error);
@@ -661,6 +701,81 @@ async function stripeWebhookHandler(req, res) {
       type: event.type,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const metadata = session.metadata || {};
+
+      if (metadata.app === 'lovingo' && metadata.type === 'coin_purchase') {
+        const userId = metadata.userId;
+        const coins = Number(metadata.coins || 0);
+        const packageId = metadata.packageId || '';
+        const source = metadata.source || 'unknown';
+
+        if (!userId || coins <= 0) {
+          console.error('❌ Metadata Checkout coins invalide:', metadata);
+          return res.json({ received: true });
+        }
+
+        const walletRef = await ensureWalletExists(userId);
+        const transactionRef = db().collection('coin_transactions').doc(session.id);
+
+        await db().runTransaction(async (transaction) => {
+          const transactionDoc = await transaction.get(transactionRef);
+
+          if (transactionDoc.exists) return;
+
+          transaction.update(walletRef, {
+            coinBalance: admin.firestore.FieldValue.increment(coins),
+            coinsPurchased: admin.firestore.FieldValue.increment(coins),
+            lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+          transaction.set(transactionRef, {
+            userId,
+            type: 'coinPurchase',
+            direction: 'credit',
+            coins,
+            packageId,
+            source,
+            checkoutSessionId: session.id,
+            amountPaid: session.amount_total,
+            currency: session.currency,
+            status: 'completed',
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            metadata,
+          });
+
+          transaction.set(db().collection('wallet_transactions').doc(), {
+            userId,
+            type: 'coinPurchase',
+            amount: 0,
+            description: `Achat coins: ${coins} coins`,
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            metadata: {
+              coins,
+              packageId,
+              source,
+              checkoutSessionId: session.id,
+              amountPaid: session.amount_total,
+              currency: session.currency,
+            },
+          });
+        });
+
+        await db().collection('payment_intent_logs').doc(session.id).set(
+          {
+            status: 'completed',
+            completedAt: admin.firestore.FieldValue.serverTimestamp(),
+            amountPaid: session.amount_total,
+            paidCurrency: session.currency,
+          },
+          { merge: true }
+        );
+
+        console.log(`✅ Coins crédités via Checkout: ${coins} coins pour user ${userId}`);
+      }
+    }
 
     if (event.type === 'payment_intent.succeeded') {
       const paymentIntent = event.data.object;
@@ -746,6 +861,7 @@ async function stripeWebhookHandler(req, res) {
         packageId: metadata.packageId || null,
         paymentIntentId: paymentIntent.id,
         reason: paymentIntent.last_payment_error?.message || 'payment_failed',
+        declineCode: paymentIntent.last_payment_error?.decline_code || null,
         createdAtDate: new Date(),
       });
     }
