@@ -1,3 +1,5 @@
 
 firebase-admin.json
 signaling_server/firebase-admin.json
+.env
+signaling_server/.env
