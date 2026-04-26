@@ -563,9 +563,9 @@ function renderHomePage({ PLAYSTORE_URL }) {
 
 <body>
     <nav class="nav">
-        <a class="logo" href="/" aria-label="Accueil Lovingo">
-            <img src="/logo.png" alt="Logo Lovingo" onerror="this.style.display='none'">
-            <span>💕 Lovingo</span>
+        <a class="logo" href="/" aria-label="Accueil Lovingo Social">
+            <img src="/logo.png" alt="Logo Lovingo Social" onerror="this.style.display='none'">
+            <span>💕 Lovingo Social</span>
         </a>
 
         <div class="nav-links">
@@ -585,7 +585,7 @@ function renderHomePage({ PLAYSTORE_URL }) {
 
     <aside class="mobile-menu" id="mobileMenu">
         <div class="mobile-menu-header">
-            <strong>💕 Lovingo</strong>
+            <strong>💕 Lovingo Social</strong>
             <button class="mobile-close" type="button" onclick="closeMobileMenu()" aria-label="Fermer">×</button>
         </div>
 
@@ -600,7 +600,7 @@ function renderHomePage({ PLAYSTORE_URL }) {
 
     <section class="hero">
         <div class="hero-content">
-            <img src="/logo.png" alt="Logo Lovingo" class="hero-logo" onerror="this.style.display='none'">
+            <img src="/logo.png" alt="Logo Lovingo Social" class="hero-logo" onerror="this.style.display='none'">
             <h1>L'amour à portée de clic</h1>
             <p>Découvrez des connexions authentiques avec Lovingo. Video calls HD, live streaming, cadeaux virtuels, coins et bien plus pour trouver votre âme sœur.</p>
 
@@ -756,7 +756,7 @@ function renderHomePage({ PLAYSTORE_URL }) {
         </div>
 
         <div class="footer-bottom">
-            <p>&copy; 2026 Lovingo. Tous droits réservés. Made with 💕 for love</p>
+            <p>&copy; 2026 Lovingo Social. Tous droits réservés. Made with 💕 for love</p>
         </div>
     </footer>
 
