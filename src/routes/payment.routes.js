@@ -12,6 +12,9 @@ const {
 const router = express.Router();
 
 const COINS_PER_USD = 5000;
+const APP_COINS_PRICE_MULTIPLIER = 1.25;
+const MIN_MANUAL_COINS_PURCHASE = 5000;
+const MAX_MANUAL_COINS_PURCHASE = 1000000;
 const AUTO_BAN_FAILED_ATTEMPTS = 3;
 
 const COIN_PACKAGES = {
@@ -50,6 +53,23 @@ function convertUsdToCheckoutAmount(usd, currency) {
   }
 
   return Math.round(localAmount * 100);
+}
+
+function calculateAppCoinsPriceUsd(coins) {
+  const normalizedCoins = Math.floor(Number(coins || 0));
+
+  if (!Number.isFinite(normalizedCoins)) return null;
+  if (normalizedCoins < MIN_MANUAL_COINS_PURCHASE) return null;
+  if (normalizedCoins > MAX_MANUAL_COINS_PURCHASE) return null;
+
+  const baseUsd = normalizedCoins / COINS_PER_USD;
+  const appUsd = baseUsd * APP_COINS_PRICE_MULTIPLIER;
+
+  return {
+    coins: normalizedCoins,
+    usd: Number(appUsd.toFixed(2)),
+    amountInCents: Math.round(appUsd * 100),
+  };
 }
 
 function getClientIp(req) {
@@ -362,6 +382,130 @@ router.post('/api/create-payment-intent', async (req, res) => {
     console.error('❌ Erreur création PaymentIntent:', error);
     return res.status(400).json({
       error: 'Erreur lors de la création du paiement',
+      details: error.message,
+    });
+  }
+});
+
+router.post('/api/create-manual-app-coin-payment-intent', async (req, res) => {
+  try {
+    const {
+      userId,
+      coins,
+      currency = 'usd',
+      source = 'app_manual_coin_purchase',
+    } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId requis' });
+    }
+
+    const price = calculateAppCoinsPriceUsd(coins);
+
+    if (!price) {
+      return res.status(400).json({
+        error: `Montant invalide. Minimum ${MIN_MANUAL_COINS_PURCHASE} coins.`,
+      });
+    }
+
+    const checkoutCurrency = normalizeCheckoutCurrency(currency);
+    const stripeAmount = convertUsdToCheckoutAmount(price.usd, checkoutCurrency);
+
+    await ensureWalletExists(userId);
+
+    const risk = await computeSmartRiskScore({
+      req,
+      userId,
+      packageId: 'manual_app',
+      amountUsd: price.usd,
+    });
+
+    await logFraudEvent({
+      type: risk.allowed ? 'risk_evaluation' : 'purchase_blocked',
+      userId,
+      publicId: null,
+      packageId: 'manual_app',
+      amountUsd: price.usd,
+      coins: price.coins,
+      ipHash: risk.ipHash,
+      userAgentHash: risk.userAgentHash,
+      riskScore: risk.score,
+      riskReasons: risk.reasons,
+      createdAtDate: new Date(),
+    });
+
+    if (!risk.allowed) {
+      await autoBanIfNeeded({
+        userId,
+        ipHash: risk.ipHash,
+        reason: risk.reasons.join(','),
+      });
+
+      return res.status(403).json({
+        error: 'Transaction bloquée par sécurité',
+        riskScore: risk.score,
+      });
+    }
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: stripeAmount,
+      currency: checkoutCurrency,
+      metadata: {
+        app: 'lovingo',
+        type: 'coin_purchase',
+        source,
+        userId,
+        publicId: '',
+        packageId: 'manual_app',
+        packageName: 'Manual App Coins',
+        coins: String(price.coins),
+        usd: String(price.usd),
+        coinsPerUsd: String(COINS_PER_USD),
+        appMultiplier: String(APP_COINS_PRICE_MULTIPLIER),
+        riskScore: String(risk.score),
+        checkoutCurrency,
+        createdAt: new Date().toISOString(),
+      },
+      automatic_payment_methods: { enabled: true },
+    });
+
+    await db().collection('payment_intent_logs').doc(paymentIntent.id).set({
+      paymentIntentId: paymentIntent.id,
+      type: 'coin_purchase',
+      userId,
+      publicId: null,
+      packageId: 'manual_app',
+      coins: price.coins,
+      usd: price.usd,
+      amount: paymentIntent.amount,
+      currency: paymentIntent.currency,
+      source,
+      ipHash: risk.ipHash,
+      userAgentHash: risk.userAgentHash,
+      riskScore: risk.score,
+      riskReasons: risk.reasons,
+      status: paymentIntent.status,
+      createdAtDate: new Date(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return res.json({
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
+      coins: price.coins,
+      usd: price.usd,
+      amount: paymentIntent.amount,
+      currency: paymentIntent.currency,
+      appPrice: {
+        coinsPerUsd: COINS_PER_USD,
+        multiplier: APP_COINS_PRICE_MULTIPLIER,
+        label: 'Achat app: 5000 coins = 1.25 USD',
+      },
+    });
+  } catch (error) {
+    console.error('❌ Erreur achat manuel coins app:', error);
+    return res.status(400).json({
+      error: 'Erreur lors de la création achat coins app',
       details: error.message,
     });
   }
@@ -880,3 +1024,5 @@ module.exports = router;
 module.exports.stripeWebhookHandler = stripeWebhookHandler;
 module.exports.COIN_PACKAGES = COIN_PACKAGES;
 module.exports.COINS_PER_USD = COINS_PER_USD;
+module.exports.APP_COINS_PRICE_MULTIPLIER = APP_COINS_PRICE_MULTIPLIER;
+module.exports.MIN_MANUAL_COINS_PURCHASE = MIN_MANUAL_COINS_PURCHASE;
