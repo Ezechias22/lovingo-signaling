@@ -12,6 +12,7 @@ const systemRoutes = require('./routes/system.routes');
 const pushRoutes = require('./routes/push.routes');
 const publicIdRoutes = require('./routes/public-id.routes');
 const fraudAdminRoutes = require('./routes/fraud-admin.routes');
+const adminRoutes = require('./routes/admin.routes');
 
 function createCorsOptions() {
   const allowedOrigins = new Set([
