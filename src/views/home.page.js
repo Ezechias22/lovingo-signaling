@@ -7,6 +7,7 @@ function renderHomePage({ PLAYSTORE_URL }) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Lovingo - L'app de rencontres nouvelle génération</title>
     <meta name="description" content="Découvrez l'amour avec Lovingo - Video calls, live streaming, cadeaux virtuels, coins et rencontres authentiques. Téléchargez maintenant !">
+
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -14,6 +15,7 @@ function renderHomePage({ PLAYSTORE_URL }) {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             line-height: 1.6;
             color: #333;
+            overflow-x: hidden;
         }
 
         .nav {
@@ -87,13 +89,113 @@ function renderHomePage({ PLAYSTORE_URL }) {
             padding: 0.65rem 1.15rem;
             border-radius: 999px;
             font-weight: 800 !important;
-            box-shadow: 0 0 0 rgba(255,215,0,0.5);
             animation: navCoinPulse 1.9s ease-in-out infinite;
         }
 
         @keyframes navCoinPulse {
             0%, 100% { box-shadow: 0 0 0 rgba(255,215,0,0.25); transform: translateY(0); }
             50% { box-shadow: 0 0 22px rgba(255,215,0,0.65); transform: translateY(-1px); }
+        }
+
+        .mobile-menu-btn {
+            display: none;
+            width: 44px;
+            height: 44px;
+            border: none;
+            border-radius: 14px;
+            background: linear-gradient(135deg, #ff6b9d, #c44569);
+            color: white;
+            cursor: pointer;
+            font-size: 1.45rem;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 8px 22px rgba(196,69,105,0.25);
+        }
+
+        .mobile-menu {
+            position: fixed;
+            top: 0;
+            right: -100%;
+            width: min(86vw, 360px);
+            height: 100vh;
+            background: linear-gradient(160deg, #2d1b69, #6a4c93);
+            z-index: 2000;
+            padding: 1.2rem;
+            transition: right 0.28s ease;
+            box-shadow: -20px 0 50px rgba(0,0,0,0.25);
+        }
+
+        .mobile-menu.open {
+            right: 0;
+        }
+
+        .mobile-menu-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.4rem;
+            color: white;
+        }
+
+        .mobile-menu-header strong {
+            font-size: 1.25rem;
+        }
+
+        .mobile-close {
+            width: 40px;
+            height: 40px;
+            border: none;
+            border-radius: 12px;
+            background: rgba(255,255,255,0.16);
+            color: white;
+            font-size: 1.3rem;
+            cursor: pointer;
+        }
+
+        .mobile-menu a,
+        .mobile-menu button.mobile-admin-link {
+            display: flex;
+            align-items: center;
+            gap: 0.7rem;
+            width: 100%;
+            padding: 1rem;
+            margin-bottom: 0.7rem;
+            border-radius: 16px;
+            color: white;
+            text-decoration: none;
+            background: rgba(255,255,255,0.12);
+            border: 1px solid rgba(255,255,255,0.16);
+            font-weight: 700;
+            cursor: pointer;
+            font-size: 1rem;
+            text-align: left;
+        }
+
+        .mobile-menu a:hover,
+        .mobile-menu button.mobile-admin-link:hover {
+            background: rgba(255,255,255,0.2);
+        }
+
+        .mobile-coins {
+            background: linear-gradient(135deg, #ffd700, #ff9f1c) !important;
+            color: #2d1b00 !important;
+            box-shadow: 0 14px 34px rgba(255,159,28,0.3);
+        }
+
+        .mobile-download {
+            background: linear-gradient(135deg, #ff6b9d, #c44569) !important;
+        }
+
+        .mobile-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.45);
+            z-index: 1500;
+        }
+
+        .mobile-overlay.open {
+            display: block;
         }
 
         .hero {
@@ -432,8 +534,10 @@ function renderHomePage({ PLAYSTORE_URL }) {
 
         @media (max-width: 768px) {
             .hero h1 { font-size: 2.5rem; }
+            .hero { padding: 7rem 1rem 3rem; }
             .nav { padding: 0.85rem 1rem; }
-            .nav-links { display: none; }
+            .nav-links, .nav .cta-btn { display: none; }
+            .mobile-menu-btn { display: flex; }
             .download-buttons { flex-direction: column; align-items: center; }
             .download-btn,
             .coins-hero-btn {
@@ -444,9 +548,19 @@ function renderHomePage({ PLAYSTORE_URL }) {
                 width: 36px;
                 height: 36px;
             }
+            .features {
+                padding: 4rem 1rem;
+            }
+            .section-title {
+                font-size: 2rem;
+            }
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
+
 <body>
     <nav class="nav">
         <a class="logo" href="/" aria-label="Accueil Lovingo">
@@ -463,7 +577,26 @@ function renderHomePage({ PLAYSTORE_URL }) {
         </div>
 
         <a href="${PLAYSTORE_URL}" target="_blank" rel="noopener noreferrer" class="cta-btn">Télécharger</a>
+
+        <button class="mobile-menu-btn" type="button" onclick="openMobileMenu()" aria-label="Ouvrir le menu">☰</button>
     </nav>
+
+    <div class="mobile-overlay" id="mobileOverlay" onclick="closeMobileMenu()"></div>
+
+    <aside class="mobile-menu" id="mobileMenu">
+        <div class="mobile-menu-header">
+            <strong>💕 Lovingo</strong>
+            <button class="mobile-close" type="button" onclick="closeMobileMenu()" aria-label="Fermer">×</button>
+        </div>
+
+        <a href="/features" onclick="closeMobileMenu()">✨ Fonctionnalités</a>
+        <a href="/pricing" onclick="closeMobileMenu()">💎 Tarifs</a>
+        <a href="/safety" onclick="closeMobileMenu()">🛡️ Sécurité</a>
+        <a href="/support" onclick="closeMobileMenu()">🎧 Support</a>
+        <a href="/coins" class="mobile-coins" onclick="closeMobileMenu()">🪙 Acheter des coins</a>
+        <a href="${PLAYSTORE_URL}" class="mobile-download" target="_blank" rel="noopener noreferrer">📱 Télécharger l'app</a>
+        <button class="mobile-admin-link" type="button" onclick="openAdminPanel()">🔐 Admin</button>
+    </aside>
 
     <section class="hero">
         <div class="hero-content">
@@ -618,7 +751,7 @@ function renderHomePage({ PLAYSTORE_URL }) {
 
             <div class="footer-section">
                 <h4>Admin</h4>
-                <a href="#" onclick="openAdminPanel(); return false;">🔐 Dashboard fraude</a>
+                <a href="#" onclick="openAdminPanel(); return false;">🔐 Dashboard admin</a>
             </div>
         </div>
 
@@ -628,11 +761,30 @@ function renderHomePage({ PLAYSTORE_URL }) {
     </footer>
 
     <script>
+        function openMobileMenu() {
+            document.getElementById('mobileMenu').classList.add('open');
+            document.getElementById('mobileOverlay').classList.add('open');
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closeMobileMenu() {
+            document.getElementById('mobileMenu').classList.remove('open');
+            document.getElementById('mobileOverlay').classList.remove('open');
+            document.body.style.overflow = '';
+        }
+
         function openAdminPanel() {
+            closeMobileMenu();
             var secret = window.prompt('ADMIN_MAINTENANCE_SECRET');
             if (!secret) return;
-            window.location.href = '/admin/fraud?key=' + encodeURIComponent(secret);
+            window.location.href = '/admin?key=' + encodeURIComponent(secret);
         }
+
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closeMobileMenu();
+            }
+        });
     </script>
 </body>
 </html>
