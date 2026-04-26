@@ -67,6 +67,7 @@ function registerRoutes(app) {
   app.use(giftRoutes);
   app.use(publicIdRoutes);
   app.use(fraudAdminRoutes);
+  app.use(adminRoutes);
   app.use(liveRoutes);
   app.use(systemRoutes);
   app.use('/api/push', pushRoutes);
