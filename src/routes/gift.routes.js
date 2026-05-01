@@ -100,8 +100,13 @@ router.post('/api/gifts/send', async (req, res) => {
     const cleanChatRoomId = chatRoomId ? cleanString(chatRoomId, 160) : null;
 
     const cleanLiveRoomId =
-      cleanString(liveRoomId || roomId || safeMetadata.liveRoomId || safeMetadata.roomId, 160) ||
-      null;
+      cleanString(
+        liveRoomId ||
+          roomId ||
+          safeMetadata.liveRoomId ||
+          safeMetadata.roomId,
+        160
+      ) || null;
 
     const cleanMessage = message ? cleanString(message, 500) : null;
 
@@ -200,6 +205,8 @@ router.post('/api/gifts/send', async (req, res) => {
       const senderWalletDoc = await transaction.get(senderWalletRef);
       const senderWallet = senderWalletDoc.data() || {};
       const currentCoinBalance = Number(senderWallet.coinBalance || 0);
+      const currentCoinsSpent = Number(senderWallet.coinsSpent || 0);
+      const senderTotalCoinsAfterGift = currentCoinsSpent + totalCoins;
 
       if (currentCoinBalance < totalCoins) {
         throw new Error('Solde coins insuffisant');
@@ -213,8 +220,12 @@ router.post('/api/gifts/send', async (req, res) => {
 
       transaction.update(receiverWalletRef, {
         balance: admin.firestore.FieldValue.increment(amounts.receiverAmountUsd),
-        totalEarnings: admin.firestore.FieldValue.increment(amounts.receiverAmountUsd),
-        totalGiftEarnings: admin.firestore.FieldValue.increment(amounts.receiverAmountUsd),
+        totalEarnings: admin.firestore.FieldValue.increment(
+          amounts.receiverAmountUsd
+        ),
+        totalGiftEarnings: admin.firestore.FieldValue.increment(
+          amounts.receiverAmountUsd
+        ),
         lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
       });
 
@@ -228,6 +239,7 @@ router.post('/api/gifts/send', async (req, res) => {
         totalUsd: amounts.totalUsd,
         senderId: cleanSenderId,
         senderName: cleanSenderName,
+        senderCoins: senderTotalCoinsAfterGift,
         receiverId: cleanReceiverId,
         chatRoomId: cleanChatRoomId,
         liveRoomId: cleanLiveRoomId,
@@ -246,6 +258,7 @@ router.post('/api/gifts/send', async (req, res) => {
           processedBy: 'render_server',
           riskScore: risk.score,
           riskReasons: risk.reasons,
+          senderCoins: senderTotalCoinsAfterGift,
         },
       };
 
@@ -266,6 +279,7 @@ router.post('/api/gifts/send', async (req, res) => {
           quantity: giftQuantity,
           liveRoomId: cleanLiveRoomId,
           chatRoomId: cleanChatRoomId,
+          senderCoins: senderTotalCoinsAfterGift,
         },
       });
 
@@ -284,6 +298,7 @@ router.post('/api/gifts/send', async (req, res) => {
           giftTransactionId: giftTransactionRef.id,
           liveRoomId: cleanLiveRoomId,
           chatRoomId: cleanChatRoomId,
+          senderCoins: senderTotalCoinsAfterGift,
         },
       });
 
@@ -306,6 +321,7 @@ router.post('/api/gifts/send', async (req, res) => {
           giftTransactionId: giftTransactionRef.id,
           liveRoomId: cleanLiveRoomId,
           chatRoomId: cleanChatRoomId,
+          senderCoins: senderTotalCoinsAfterGift,
         },
       });
 
@@ -320,6 +336,7 @@ router.post('/api/gifts/send', async (req, res) => {
         quantity: giftQuantity,
         senderId: cleanSenderId,
         senderName: cleanSenderName,
+        senderCoins: senderTotalCoinsAfterGift,
         receiverId: cleanReceiverId,
         chatRoomId: cleanChatRoomId,
         liveRoomId: cleanLiveRoomId,
@@ -361,6 +378,7 @@ router.post('/api/gifts/send', async (req, res) => {
           text: `${cleanSenderName} a envoyé ${cleanGiftName} x${giftQuantity}`,
           senderId: cleanSenderId,
           senderName: cleanSenderName,
+          senderCoins: senderTotalCoinsAfterGift,
           receiverId: cleanReceiverId,
           giftId: cleanGiftId,
           giftName: cleanGiftName,
