@@ -8,6 +8,7 @@ const {
 } = require('../state/store');
 const { getUserIdFromRequest, broadcastToRoom } = require('../utils/helpers');
 const { createLiveKitToken } = require('../services/livekit.service');
+const { notifyFollowersOfLive } = require('../services/push.service');
 const {
   LIVEKIT_URL,
   LIVEKIT_API_KEY,
@@ -362,6 +363,25 @@ router.post('/live/rooms', async (req, res) => {
     liveJoinRequests.set(roomId, []);
 
     console.log(`🔴 Live room créée: ${roomId} par ${userId}`);
+
+    // 📡 Notification aux followers (asynchrone, non bloquant)
+    setImmediate(() => {
+      notifyFollowersOfLive({
+        hostId: room.hostId,
+        hostName: room.hostUsername,
+        hostAvatar: room.hostPhotoUrl,
+        liveRoomId: room.roomId,
+        liveTitle: room.title,
+      })
+        .then((result) => {
+          console.log(
+            `📡 notifyFollowersOfLive: ${JSON.stringify(result)}`
+          );
+        })
+        .catch((err) => {
+          console.error('❌ notifyFollowersOfLive erreur:', err.message);
+        });
+    });
 
     return res.status(201).json(serializeRoom(room));
   } catch (error) {

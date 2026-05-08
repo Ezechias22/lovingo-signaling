@@ -558,6 +558,257 @@ async function unsubscribeTopic({
   };
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// 📡 NOTIFICATION AUX FOLLOWERS QUAND UN LIVE DÉMARRE
+// ════════════════════════════════════════════════════════════════════════
+
+/**
+ * Envoie une notification "X est en live" à tous les followers du host.
+ * Utilise Firestore (sous-collection users/{hostId}/followers) pour la liste,
+ * puis exploite les FCM tokens (mémoire + Firestore fallback).
+ */
+async function notifyFollowersOfLive({
+  hostId,
+  hostName,
+  hostAvatar,
+  liveRoomId,
+  liveTitle,
+}) {
+  initializeFirebaseAdmin();
+
+  if (!hostId || !liveRoomId) {
+    console.warn('⚠️ notifyFollowersOfLive: hostId ou liveRoomId manquant');
+    return { ok: false, sent: 0, failed: 0, reason: 'missing_params' };
+  }
+
+  if (firebaseMode !== 'live' || !firebaseApp) {
+    console.warn(
+      `⚠️ notifyFollowersOfLive: Firebase Admin non initialisé (${firebaseMode})`
+    );
+    return {
+      ok: true,
+      mode: 'simulation',
+      sent: 0,
+      failed: 0,
+      simulated: true,
+      reason: firebaseInitError || 'firebase_not_live',
+    };
+  }
+
+  try {
+    const db = admin.firestore();
+
+    // 1. Récupère tous les followers du host
+    const followersSnap = await db
+      .collection('users')
+      .doc(String(hostId))
+      .collection('followers')
+      .get();
+
+    if (followersSnap.empty) {
+      console.log(`ℹ️ Host ${hostId} n'a aucun follower`);
+      return { ok: true, sent: 0, failed: 0, total_followers: 0 };
+    }
+
+    const followerIds = followersSnap.docs.map((d) => d.id);
+    console.log(
+      `📡 ${followerIds.length} followers à notifier pour live de ${hostName || hostId}`
+    );
+
+    // 2. Construit le payload commun
+    const title = `🔴 ${hostName || 'Quelqu\'un'} est en live !`;
+    const body =
+      liveTitle && String(liveTitle).trim().length > 0
+        ? String(liveTitle)
+        : 'Rejoignez le live maintenant';
+
+    const payloadData = {
+      type: 'live_started',
+      live_room_id: String(liveRoomId),
+      host_id: String(hostId),
+      host_name: String(hostName || ''),
+      host_avatar: String(hostAvatar || ''),
+      live_title: String(liveTitle || ''),
+      action_url: '/live/room',
+      click_action: 'FLUTTER_NOTIFICATION_CLICK',
+    };
+
+    // 3. Récupère les tokens (mémoire d'abord, puis Firestore en fallback)
+    const allTokens = [];
+    const tokenToUserId = new Map();
+
+    const BATCH = 30;
+    for (let i = 0; i < followerIds.length; i += BATCH) {
+      const slice = followerIds.slice(i, i + BATCH);
+
+      const idsToFetchFromFirestore = [];
+      for (const fid of slice) {
+        const memSet = userTokensIndex.get(fid);
+        if (memSet && memSet.size > 0) {
+          for (const t of memSet) {
+            allTokens.push(t);
+            tokenToUserId.set(t, fid);
+          }
+        } else {
+          idsToFetchFromFirestore.push(fid);
+        }
+      }
+
+      if (idsToFetchFromFirestore.length > 0) {
+        try {
+          const usersSnap = await db
+            .collection('users')
+            .where(
+              admin.firestore.FieldPath.documentId(),
+              'in',
+              idsToFetchFromFirestore
+            )
+            .get();
+
+          usersSnap.docs.forEach((doc) => {
+            const data = doc.data() || {};
+
+            // Préférences user (optionnelles)
+            if (data.notificationsEnabled === false) return;
+            if (data.liveNotificationsEnabled === false) return;
+
+            const fcmTokens = Array.isArray(data.fcmTokens)
+              ? data.fcmTokens
+              : data.fcmToken
+              ? [data.fcmToken]
+              : [];
+
+            fcmTokens.forEach((t) => {
+              if (t && typeof t === 'string' && t.trim().length > 0) {
+                allTokens.push(t.trim());
+                tokenToUserId.set(t.trim(), doc.id);
+              }
+            });
+          });
+        } catch (e) {
+          console.warn(
+            `⚠️ Fetch Firestore fcmTokens batch a échoué: ${e.message}`
+          );
+        }
+      }
+    }
+
+    const uniqueTokens = Array.from(new Set(allTokens));
+
+    if (uniqueTokens.length === 0) {
+      console.log('⚠️ Aucun FCM token valide parmi les followers');
+      return {
+        ok: true,
+        sent: 0,
+        failed: 0,
+        total_followers: followerIds.length,
+        reason: 'no_tokens',
+      };
+    }
+
+    // 4. Construit le message FCM
+    const baseMessage = {
+      notification: { title, body },
+      data: stringifyData(payloadData),
+      android: {
+        priority: 'high',
+        notification: {
+          channelId: 'lovingo_default',
+          sound: 'default',
+          clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+          imageUrl: hostAvatar || undefined,
+        },
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: 'default',
+            badge: 1,
+            'mutable-content': 1,
+          },
+        },
+        fcmOptions: {
+          imageUrl: hostAvatar || undefined,
+        },
+      },
+    };
+
+    // 5. Envoi multicast par chunks de 500
+    let sent = 0;
+    let failed = 0;
+    const invalidTokens = [];
+
+    for (let i = 0; i < uniqueTokens.length; i += 500) {
+      const chunk = uniqueTokens.slice(i, i + 500);
+      try {
+        const resp = await admin.messaging().sendEachForMulticast({
+          ...baseMessage,
+          tokens: chunk,
+        });
+        sent += resp.successCount;
+        failed += resp.failureCount;
+
+        resp.responses.forEach((r, idx) => {
+          if (!r.success) {
+            const code = r.error?.code || '';
+            if (
+              code.includes('registration-token-not-registered') ||
+              code.includes('invalid-argument') ||
+              code.includes('invalid-registration-token')
+            ) {
+              invalidTokens.push(chunk[idx]);
+            }
+          }
+        });
+      } catch (e) {
+        console.error('❌ Erreur sendEachForMulticast (live):', e.message);
+        failed += chunk.length;
+      }
+    }
+
+    // 6. Cleanup tokens invalides
+    if (invalidTokens.length > 0) {
+      console.log(`🧹 Suppression de ${invalidTokens.length} tokens invalides`);
+      for (const t of invalidTokens) {
+        const uid = tokenToUserId.get(t);
+        try {
+          if (deviceTokensByToken.has(t)) {
+            const rec = deviceTokensByToken.get(t);
+            removeTokenFromUserIndex(rec?.user_id, t);
+            deviceTokensByToken.delete(t);
+          }
+          if (uid) {
+            await db
+              .collection('users')
+              .doc(uid)
+              .update({
+                fcmTokens: admin.firestore.FieldValue.arrayRemove(t),
+              })
+              .catch(() => {});
+          }
+        } catch (_) {}
+      }
+    }
+
+    console.log(
+      `✅ Live notification: ${sent} envoyées, ${failed} échecs (${followerIds.length} followers, ${uniqueTokens.length} tokens)`
+    );
+
+    return {
+      ok: true,
+      mode: 'live',
+      sent,
+      failed,
+      total_followers: followerIds.length,
+      total_tokens: uniqueTokens.length,
+      cleaned_invalid: invalidTokens.length,
+    };
+  } catch (e) {
+    console.error('❌ notifyFollowersOfLive erreur:', e);
+    return { ok: false, sent: 0, failed: 0, error: e.message };
+  }
+}
+
 function stringifyData(data) {
   const result = {};
   const input = data && typeof data === 'object' ? data : {};
@@ -602,4 +853,5 @@ module.exports = {
   sendToUser,
   subscribeTopic,
   unsubscribeTopic,
+  notifyFollowersOfLive,
 };
