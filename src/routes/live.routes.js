@@ -17,18 +17,15 @@ const {
 
 const router = express.Router();
 
+// 🆕 Modes de grid supportés
+const VALID_GRID_MODES = ['grid15', 'bigScreen6'];
+const DEFAULT_GRID_MODE = 'grid15';
+
 function toIsoDate(value) {
   if (!value) return new Date().toISOString();
-
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-
+  if (value instanceof Date) return value.toISOString();
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return new Date().toISOString();
-  }
-
+  if (Number.isNaN(parsed.getTime())) return new Date().toISOString();
   return parsed.toISOString();
 }
 
@@ -54,28 +51,25 @@ function safeNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function buildUniqueParticipantIdentity({
-  userId,
-  role,
-  roomId,
-  deviceId,
-}) {
+function normalizeGridMode(value) {
+  const raw = safeString(String(value || '')).trim();
+  if (VALID_GRID_MODES.includes(raw)) return raw;
+  return DEFAULT_GRID_MODE;
+}
+
+function buildUniqueParticipantIdentity({ userId, role, roomId, deviceId }) {
   const safeUserId = safeString(String(userId || 'user'));
   const safeRole = safeString(String(role || 'audience'));
   const safeRoomId = safeString(String(roomId || 'room'));
-  const safeDeviceId =
-    safeString(String(deviceId || '')) || crypto.randomUUID();
-
+  const safeDeviceId = safeString(String(deviceId || '')) || crypto.randomUUID();
   return `${safeUserId}::${safeRole}::${safeRoomId}::${safeDeviceId}`;
 }
 
 function getRoomViewerCount(room) {
   if (!room) return 0;
-
   const liveViewers = room.viewers instanceof Set ? room.viewers.size : 0;
   const liveGuests = room.guests instanceof Set ? room.guests.size : 0;
   const hostCount = room.isActive === false ? 0 : 1;
-
   return liveViewers + liveGuests + hostCount;
 }
 
@@ -102,6 +96,10 @@ function serializeRoom(room) {
     isTrending: safeBoolean(room.isTrending, false),
     isNew: safeBoolean(room.isNew, false),
 
+    // 🆕 Champs grid
+    gridMode: room.gridMode || DEFAULT_GRID_MODE,
+    bigScreenUserId: room.bigScreenUserId || null,
+
     guestCount,
     requestCount,
     stats: {
@@ -116,21 +114,17 @@ function serializeRoom(room) {
 function setHasRealUser(setLike, userId) {
   if (!(setLike instanceof Set)) return false;
   const prefix = `${String(userId)}::`;
-
   for (const value of setLike) {
     if (String(value) === String(userId) || String(value).startsWith(prefix)) {
       return true;
     }
   }
-
   return false;
 }
 
 function removeUserFromSet(setLike, userId) {
   if (!(setLike instanceof Set)) return;
-
   const prefix = `${String(userId)}::`;
-
   for (const value of Array.from(setLike)) {
     if (String(value) === String(userId) || String(value).startsWith(prefix)) {
       setLike.delete(value);
@@ -144,55 +138,29 @@ function isBlocked(room, userId) {
 }
 
 function getActingUserId(req) {
-  return String(getUserIdFromRequest(req) || req.body?.userId || '').trim();
+  return String(getUserIdFromRequest(req) || req.body?.userId || req.body?.actingUserId || '').trim();
 }
 
 function ensureHostAccess(req, room) {
   const actingUserId = getActingUserId(req);
-
   if (!actingUserId) {
-    return {
-      ok: false,
-      status: 401,
-      payload: { error: 'Utilisateur non authentifié' },
-    };
+    return { ok: false, status: 401, payload: { error: 'Utilisateur non authentifié' } };
   }
-
   if (!room) {
-    return {
-      ok: false,
-      status: 404,
-      payload: { error: 'Room introuvable' },
-    };
+    return { ok: false, status: 404, payload: { error: 'Room introuvable' } };
   }
-
   if (String(room.hostId) !== actingUserId) {
-    return {
-      ok: false,
-      status: 403,
-      payload: { error: 'Seul le host peut effectuer cette action' },
-    };
+    return { ok: false, status: 403, payload: { error: 'Seul le host peut effectuer cette action' } };
   }
-
-  return {
-    ok: true,
-    actingUserId,
-  };
+  return { ok: true, actingUserId };
 }
 
 function syncRoomStats(room) {
   if (!room) return;
-
   const currentCount = getRoomViewerCount(room);
   room.stats = room.stats || {};
-  room.stats.totalViewers = Math.max(
-    safeNumber(room.stats.totalViewers, 0),
-    currentCount
-  );
-  room.stats.peakViewers = Math.max(
-    safeNumber(room.stats.peakViewers, 0),
-    currentCount
-  );
+  room.stats.totalViewers = Math.max(safeNumber(room.stats.totalViewers, 0), currentCount);
+  room.stats.peakViewers = Math.max(safeNumber(room.stats.peakViewers, 0), currentCount);
 }
 
 function terminateLiveRoom(roomId, endedByUserId = null) {
@@ -202,29 +170,14 @@ function terminateLiveRoom(roomId, endedByUserId = null) {
   room.isActive = false;
   room.endedAt = new Date().toISOString();
 
-  if (room.viewers instanceof Set) {
-    room.viewers.clear();
-  }
-
-  if (room.guests instanceof Set) {
-    room.guests.clear();
-  }
-
-  if (room.requests instanceof Set) {
-    room.requests.clear();
-  }
-
-  if (room.invitedUsers instanceof Set) {
-    room.invitedUsers.clear();
-  }
+  if (room.viewers instanceof Set) room.viewers.clear();
+  if (room.guests instanceof Set) room.guests.clear();
+  if (room.requests instanceof Set) room.requests.clear();
+  if (room.invitedUsers instanceof Set) room.invitedUsers.clear();
 
   const requests = liveJoinRequests.get(roomId) || [];
   for (const request of requests) {
-    if (
-      request.status === 'pending' ||
-      request.status === 'accepted' ||
-      request.status === 'invited'
-    ) {
+    if (request.status === 'pending' || request.status === 'accepted' || request.status === 'invited') {
       request.status = 'ended';
     }
   }
@@ -263,9 +216,7 @@ router.get('/live/health', (req, res) => {
     status: 'OK',
     liveRooms: liveRooms.size,
     liveJoinRequests: liveJoinRequests.size,
-    livekitConfigured: Boolean(
-      LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET
-    ),
+    livekitConfigured: Boolean(LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET),
     timestamp: new Date().toISOString(),
   });
 });
@@ -281,27 +232,15 @@ router.get('/live/rooms', async (req, res) => {
       .sort((a, b) => {
         const aTrending = a.isTrending ? 1 : 0;
         const bTrending = b.isTrending ? 1 : 0;
-
-        if (bTrending !== aTrending) {
-          return bTrending - aTrending;
-        }
-
-        if (b.viewerCount !== a.viewerCount) {
-          return b.viewerCount - a.viewerCount;
-        }
-
-        return (
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        );
+        if (bTrending !== aTrending) return bTrending - aTrending;
+        if (b.viewerCount !== a.viewerCount) return b.viewerCount - a.viewerCount;
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       });
 
     return res.status(200).json(roomsList);
   } catch (error) {
     console.error('❌ Erreur get active live rooms:', error);
-    return res.status(500).json({
-      error: 'Impossible de récupérer les lives actifs',
-      details: error.message,
-    });
+    return res.status(500).json({ error: 'Impossible de récupérer les lives actifs', details: error.message });
   }
 });
 
@@ -320,16 +259,13 @@ router.post('/live/rooms', async (req, res) => {
       category,
       isTrending = false,
       isNew = true,
+      gridMode, // 🆕
     } = req.body || {};
 
     const roomId = crypto.randomUUID();
-
-    const resolvedHostUsername = safeString(
-      hostUsername || userName,
-      String(userId)
-    );
-
+    const resolvedHostUsername = safeString(hostUsername || userName, String(userId));
     const resolvedHostPhotoUrl = safeNullableString(hostPhotoUrl || photoUrl);
+    const resolvedGridMode = normalizeGridMode(gridMode);
 
     const room = {
       roomId,
@@ -343,6 +279,11 @@ router.post('/live/rooms', async (req, res) => {
       category: safeNullableString(category),
       isTrending: safeBoolean(isTrending, false),
       isNew: safeBoolean(isNew, true),
+
+      // 🆕 Grid config
+      gridMode: resolvedGridMode,
+      bigScreenUserId: resolvedGridMode === 'bigScreen6' ? String(userId) : null,
+
       guests: new Set(),
       viewers: new Set(),
       requests: new Set(),
@@ -350,21 +291,15 @@ router.post('/live/rooms', async (req, res) => {
       invitedUsers: new Set(),
       startTime: new Date(),
       endedAt: null,
-      stats: {
-        totalViewers: 1,
-        peakViewers: 1,
-        totalGifts: 0,
-        totalHearts: 0,
-      },
+      stats: { totalViewers: 1, peakViewers: 1, totalGifts: 0, totalHearts: 0 },
       isActive: true,
     };
 
     liveRooms.set(roomId, room);
     liveJoinRequests.set(roomId, []);
 
-    console.log(`🔴 Live room créée: ${roomId} par ${userId}`);
+    console.log(`🔴 Live room créée: ${roomId} par ${userId} [grid=${resolvedGridMode}]`);
 
-    // 📡 Notification aux followers (asynchrone, non bloquant)
     setImmediate(() => {
       notifyFollowersOfLive({
         hostId: room.hostId,
@@ -373,23 +308,14 @@ router.post('/live/rooms', async (req, res) => {
         liveRoomId: room.roomId,
         liveTitle: room.title,
       })
-        .then((result) => {
-          console.log(
-            `📡 notifyFollowersOfLive: ${JSON.stringify(result)}`
-          );
-        })
-        .catch((err) => {
-          console.error('❌ notifyFollowersOfLive erreur:', err.message);
-        });
+        .then((result) => console.log(`📡 notifyFollowersOfLive: ${JSON.stringify(result)}`))
+        .catch((err) => console.error('❌ notifyFollowersOfLive erreur:', err.message));
     });
 
     return res.status(201).json(serializeRoom(room));
   } catch (error) {
     console.error('❌ Erreur create live room:', error);
-    return res.status(500).json({
-      error: 'Impossible de créer la room live',
-      details: error.message,
-    });
+    return res.status(500).json({ error: 'Impossible de créer la room live', details: error.message });
   }
 });
 
@@ -397,20 +323,12 @@ router.get('/live/rooms/:roomId', async (req, res) => {
   try {
     const { roomId } = req.params;
     const room = liveRooms.get(roomId);
-
-    if (!room) {
-      return res.status(404).json({ error: 'Room introuvable' });
-    }
-
+    if (!room) return res.status(404).json({ error: 'Room introuvable' });
     syncRoomStats(room);
-
     return res.status(200).json(serializeRoom(room));
   } catch (error) {
     console.error('❌ Erreur get room:', error);
-    return res.status(500).json({
-      error: 'Impossible de récupérer la room',
-      details: error.message,
-    });
+    return res.status(500).json({ error: 'Impossible de récupérer la room', details: error.message });
   }
 });
 
@@ -418,24 +336,16 @@ router.post('/live/rooms/:roomId/end', async (req, res) => {
   try {
     const { roomId } = req.params;
     const room = liveRooms.get(roomId);
-
-    if (!room) {
-      return res.status(404).json({ error: 'Room introuvable' });
-    }
+    if (!room) return res.status(404).json({ error: 'Room introuvable' });
 
     const access = ensureHostAccess(req, room);
-    if (!access.ok) {
-      return res.status(access.status).json(access.payload);
-    }
+    if (!access.ok) return res.status(access.status).json(access.payload);
 
     const endedRoom = terminateLiveRoom(roomId, access.actingUserId);
 
     const alternativeRooms = Array.from(liveRooms.values())
       .filter((item) => item && item.roomId !== roomId && item.isActive === true)
-      .map((item) => {
-        syncRoomStats(item);
-        return serializeRoom(item);
-      })
+      .map((item) => { syncRoomStats(item); return serializeRoom(item); })
       .sort((a, b) => (b.viewerCount || 0) - (a.viewerCount || 0))
       .slice(0, 20);
 
@@ -447,62 +357,156 @@ router.post('/live/rooms/:roomId/end', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Erreur end live room:', error);
-    return res.status(500).json({
-      error: 'Impossible de terminer le live',
-      details: error.message,
+    return res.status(500).json({ error: 'Impossible de terminer le live', details: error.message });
+  }
+});
+
+// 🆕 Changer le mode de grid pendant le live
+router.post('/live/rooms/:roomId/grid-mode', async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const room = liveRooms.get(roomId);
+    if (!room) return res.status(404).json({ error: 'Room introuvable' });
+
+    const access = ensureHostAccess(req, room);
+    if (!access.ok) return res.status(access.status).json(access.payload);
+
+    if (room.isActive !== true) {
+      return res.status(409).json({ error: 'Ce live est terminé' });
+    }
+
+    const newMode = normalizeGridMode(req.body?.gridMode);
+    room.gridMode = newMode;
+
+    // En passant en bigScreen6, par défaut le host est sur le grand écran
+    if (newMode === 'bigScreen6') {
+      if (!room.bigScreenUserId) {
+        room.bigScreenUserId = String(room.hostId);
+      }
+    } else {
+      room.bigScreenUserId = null;
+    }
+
+    broadcastToRoom(roomId, {
+      type: 'liveGridModeChanged',
+      from: 'server',
+      to: roomId,
+      data: {
+        roomId,
+        gridMode: room.gridMode,
+        bigScreenUserId: room.bigScreenUserId,
+      },
     });
+
+    console.log(`🎛️ Grid mode changé: ${roomId} -> ${newMode}`);
+
+    return res.status(200).json({
+      success: true,
+      roomId,
+      gridMode: room.gridMode,
+      bigScreenUserId: room.bigScreenUserId,
+    });
+  } catch (error) {
+    console.error('❌ Erreur set grid mode:', error);
+    return res.status(500).json({ error: 'Impossible de changer le mode de grid', details: error.message });
+  }
+});
+
+// 🆕 Promouvoir / démettre un utilisateur sur le grand écran
+router.post('/live/rooms/:roomId/big-screen', async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const room = liveRooms.get(roomId);
+    if (!room) return res.status(404).json({ error: 'Room introuvable' });
+
+    const access = ensureHostAccess(req, room);
+    if (!access.ok) return res.status(access.status).json(access.payload);
+
+    if (room.isActive !== true) {
+      return res.status(409).json({ error: 'Ce live est terminé' });
+    }
+
+    if (room.gridMode !== 'bigScreen6') {
+      return res.status(409).json({
+        error: 'Le grand écran n\'est disponible qu\'en mode bigScreen6',
+      });
+    }
+
+    // userId peut être null pour démettre (le host reprend la place)
+    const rawUserId = req.body?.bigScreenUserId;
+    const targetUserId = rawUserId === null || rawUserId === undefined || rawUserId === ''
+      ? null
+      : String(rawUserId).trim();
+
+    // Si null ou vide => le host reprend le grand écran
+    const newBigScreenUserId = targetUserId && targetUserId.length > 0
+      ? targetUserId
+      : String(room.hostId);
+
+    // Vérifier que la cible est bien sur scène (host ou guest)
+    const isHost = String(newBigScreenUserId) === String(room.hostId);
+    const isGuest = setHasRealUser(room.guests, newBigScreenUserId);
+
+    if (!isHost && !isGuest) {
+      return res.status(409).json({
+        error: 'Cet utilisateur n\'est pas sur scène (doit être host ou guest)',
+      });
+    }
+
+    if (isBlocked(room, newBigScreenUserId)) {
+      return res.status(403).json({ error: 'Utilisateur bloqué' });
+    }
+
+    room.bigScreenUserId = newBigScreenUserId;
+
+    broadcastToRoom(roomId, {
+      type: 'liveBigScreenChanged',
+      from: 'server',
+      to: roomId,
+      data: {
+        roomId,
+        bigScreenUserId: room.bigScreenUserId,
+      },
+    });
+
+    console.log(`🖥️ Big screen: ${roomId} -> ${newBigScreenUserId}`);
+
+    return res.status(200).json({
+      success: true,
+      roomId,
+      bigScreenUserId: room.bigScreenUserId,
+      gridMode: room.gridMode,
+    });
+  } catch (error) {
+    console.error('❌ Erreur set big screen:', error);
+    return res.status(500).json({ error: 'Impossible de changer le grand écran', details: error.message });
   }
 });
 
 router.post('/live/rooms/:roomId/token', async (req, res) => {
   try {
     const { roomId } = req.params;
-    const {
-      role = 'audience',
-      userName,
-      userId: bodyUserId,
-      photoUrl,
-      deviceId,
-    } = req.body || {};
+    const { role = 'audience', userName, userId: bodyUserId, photoUrl, deviceId } = req.body || {};
 
     const authUserId = getUserIdFromRequest(req);
     const userId = authUserId || bodyUserId || `${role}_${Date.now()}`;
 
     const room = liveRooms.get(roomId);
-    if (!room) {
-      return res.status(404).json({ error: 'Room introuvable' });
-    }
+    if (!room) return res.status(404).json({ error: 'Room introuvable' });
+    if (room.isActive !== true) return res.status(409).json({ error: 'Ce live est terminé' });
 
-    if (room.isActive !== true) {
-      return res.status(409).json({ error: 'Ce live est terminé' });
-    }
-
-    const safeRole = ['host', 'guest', 'audience'].includes(role)
-      ? role
-      : 'audience';
-
+    const safeRole = ['host', 'guest', 'audience'].includes(role) ? role : 'audience';
     const realUserId = String(userId);
 
     if (isBlocked(room, realUserId)) {
-      return res.status(403).json({
-        error: 'Vous êtes bloqué dans ce live',
-      });
+      return res.status(403).json({ error: 'Vous êtes bloqué dans ce live' });
     }
 
-    const displayName = safeString(
-      userName,
-      safeRole === 'host' ? room.hostUsername || realUserId : realUserId
-    );
-
-    const resolvedPhotoUrl =
-      safeNullableString(photoUrl) ||
-      (safeRole === 'host' ? room.hostPhotoUrl || null : null);
+    const displayName = safeString(userName, safeRole === 'host' ? room.hostUsername || realUserId : realUserId);
+    const resolvedPhotoUrl = safeNullableString(photoUrl) || (safeRole === 'host' ? room.hostPhotoUrl || null : null);
 
     const uniqueIdentity = buildUniqueParticipantIdentity({
-      userId: realUserId,
-      role: safeRole,
-      roomId,
-      deviceId,
+      userId: realUserId, role: safeRole, roomId, deviceId,
     });
 
     if (safeRole === 'host') {
@@ -512,6 +516,11 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
       room.isActive = true;
       removeUserFromSet(room.guests, realUserId);
       removeUserFromSet(room.viewers, realUserId);
+
+      // 🆕 En bigScreen6, par défaut le host est sur le grand écran
+      if (room.gridMode === 'bigScreen6' && !room.bigScreenUserId) {
+        room.bigScreenUserId = realUserId;
+      }
     } else if (safeRole === 'audience') {
       removeUserFromSet(room.guests, realUserId);
       removeUserFromSet(room.viewers, realUserId);
@@ -520,23 +529,13 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
       removeUserFromSet(room.viewers, realUserId);
       removeUserFromSet(room.guests, realUserId);
       room.guests.add(uniqueIdentity);
-
-      if (room.requests instanceof Set) {
-        room.requests.delete(realUserId);
-      }
-
-      if (room.invitedUsers instanceof Set) {
-        room.invitedUsers.delete(realUserId);
-      }
+      if (room.requests instanceof Set) room.requests.delete(realUserId);
+      if (room.invitedUsers instanceof Set) room.invitedUsers.delete(realUserId);
 
       const requests = liveJoinRequests.get(roomId) || [];
       for (const item of requests) {
         if (String(item.userId) === realUserId) {
-          if (
-            item.status === 'pending' ||
-            item.status === 'accepted' ||
-            item.status === 'invited'
-          ) {
+          if (item.status === 'pending' || item.status === 'accepted' || item.status === 'invited') {
             item.status = 'accepted';
           }
         }
@@ -573,10 +572,7 @@ router.post('/live/rooms/:roomId/token', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Erreur get room token:', error);
-    return res.status(500).json({
-      error: 'Impossible de générer le token LiveKit',
-      details: error.message,
-    });
+    return res.status(500).json({ error: 'Impossible de générer le token LiveKit', details: error.message });
   }
 });
 
@@ -584,60 +580,30 @@ router.post('/live/rooms/:roomId/requests', async (req, res) => {
   try {
     const { roomId } = req.params;
     const { message = '', userName, photoUrl } = req.body || {};
-    const userId =
-      getUserIdFromRequest(req) || req.body.userId || `guest_${Date.now()}`;
+    const userId = getUserIdFromRequest(req) || req.body.userId || `guest_${Date.now()}`;
 
     const room = liveRooms.get(roomId);
-    if (!room) {
-      return res.status(404).json({ error: 'Room introuvable' });
-    }
-
-    if (room.isActive !== true) {
-      return res.status(409).json({ error: 'Ce live est terminé' });
-    }
+    if (!room) return res.status(404).json({ error: 'Room introuvable' });
+    if (room.isActive !== true) return res.status(409).json({ error: 'Ce live est terminé' });
 
     const realUserId = String(userId);
-
-    if (isBlocked(room, realUserId)) {
-      return res.status(403).json({
-        error: 'Vous êtes bloqué dans ce live',
-      });
-    }
-
-    if (String(room.hostId) === realUserId) {
-      return res.status(409).json({
-        error: 'Le host ne peut pas envoyer de demande',
-      });
-    }
-
-    if (setHasRealUser(room.guests, realUserId)) {
-      return res.status(409).json({
-        error: 'Utilisateur déjà guest dans ce live',
-      });
-    }
+    if (isBlocked(room, realUserId)) return res.status(403).json({ error: 'Vous êtes bloqué dans ce live' });
+    if (String(room.hostId) === realUserId) return res.status(409).json({ error: 'Le host ne peut pas envoyer de demande' });
+    if (setHasRealUser(room.guests, realUserId)) return res.status(409).json({ error: 'Utilisateur déjà guest dans ce live' });
 
     const requests = liveJoinRequests.get(roomId) || [];
-
-    const existingPending = requests.find(
-      (r) => String(r.userId) === realUserId && r.status === 'pending'
-    );
+    const existingPending = requests.find((r) => String(r.userId) === realUserId && r.status === 'pending');
 
     if (existingPending) {
       return res.status(200).json({
-        success: true,
-        alreadyPending: true,
-        requestId: existingPending.requestId,
-        roomId,
-        userId: realUserId,
-        status: 'pending',
+        success: true, alreadyPending: true,
+        requestId: existingPending.requestId, roomId, userId: realUserId, status: 'pending',
       });
     }
 
     const requestId = crypto.randomUUID();
     const joinRequest = {
-      requestId,
-      roomId,
-      userId: realUserId,
+      requestId, roomId, userId: realUserId,
       userName: safeString(userName, realUserId),
       photoUrl: safeNullableString(photoUrl),
       message: safeString(message),
@@ -648,54 +614,27 @@ router.post('/live/rooms/:roomId/requests', async (req, res) => {
     requests.push(joinRequest);
     liveJoinRequests.set(roomId, requests);
 
-    if (room.requests instanceof Set) {
-      room.requests.add(realUserId);
-    }
+    if (room.requests instanceof Set) room.requests.add(realUserId);
 
-    broadcastToRoom(roomId, {
-      type: 'liveJoinRequest',
-      from: 'server',
-      to: roomId,
-      data: joinRequest,
-    });
-
+    broadcastToRoom(roomId, { type: 'liveJoinRequest', from: 'server', to: roomId, data: joinRequest });
     console.log(`🙋 Join request: ${realUserId} -> ${roomId}`);
 
-    return res.status(201).json({
-      success: true,
-      requestId,
-      roomId,
-      userId: realUserId,
-      status: 'pending',
-    });
+    return res.status(201).json({ success: true, requestId, roomId, userId: realUserId, status: 'pending' });
   } catch (error) {
     console.error('❌ Erreur requestToJoin:', error);
-    return res.status(500).json({
-      error: 'Impossible d’envoyer la demande',
-      details: error.message,
-    });
+    return res.status(500).json({ error: 'Impossible d\'envoyer la demande', details: error.message });
   }
 });
 
 router.get('/live/rooms/:roomId/requests', async (req, res) => {
   try {
     const { roomId } = req.params;
-
-    if (!liveRooms.has(roomId)) {
-      return res.status(404).json({ error: 'Room introuvable' });
-    }
-
+    if (!liveRooms.has(roomId)) return res.status(404).json({ error: 'Room introuvable' });
     const requests = liveJoinRequests.get(roomId) || [];
-    return res.status(200).json({
-      roomId,
-      requests,
-    });
+    return res.status(200).json({ roomId, requests });
   } catch (error) {
     console.error('❌ Erreur list requests:', error);
-    return res.status(500).json({
-      error: 'Impossible de récupérer les demandes',
-      details: error.message,
-    });
+    return res.status(500).json({ error: 'Impossible de récupérer les demandes', details: error.message });
   }
 });
 
@@ -703,65 +642,35 @@ router.post('/live/rooms/:roomId/requests/:requestId/accept', async (req, res) =
   try {
     const { roomId, requestId } = req.params;
     const room = liveRooms.get(roomId);
-
-    if (!room) {
-      return res.status(404).json({ error: 'Room introuvable' });
-    }
+    if (!room) return res.status(404).json({ error: 'Room introuvable' });
 
     const access = ensureHostAccess(req, room);
-    if (!access.ok) {
-      return res.status(access.status).json(access.payload);
-    }
-
-    if (room.isActive !== true) {
-      return res.status(409).json({ error: 'Ce live est terminé' });
-    }
+    if (!access.ok) return res.status(access.status).json(access.payload);
+    if (room.isActive !== true) return res.status(409).json({ error: 'Ce live est terminé' });
 
     const requests = liveJoinRequests.get(roomId) || [];
     const request = requests.find((r) => r.requestId === requestId);
-
-    if (!request) {
-      return res.status(404).json({ error: 'Demande introuvable' });
-    }
+    if (!request) return res.status(404).json({ error: 'Demande introuvable' });
 
     request.status = 'accepted';
-
-    if (room.requests instanceof Set) {
-      room.requests.delete(request.userId);
-    }
-
-    if (room.invitedUsers instanceof Set) {
-      room.invitedUsers.delete(String(request.userId));
-    }
+    if (room.requests instanceof Set) room.requests.delete(request.userId);
+    if (room.invitedUsers instanceof Set) room.invitedUsers.delete(String(request.userId));
 
     broadcastToRoom(roomId, {
       type: 'liveJoinRequestAccepted',
-      from: 'server',
-      to: roomId,
+      from: 'server', to: roomId,
       data: {
-        requestId,
-        userId: request.userId,
+        requestId, userId: request.userId,
         userName: request.userName || request.userId,
-        photoUrl: request.photoUrl || null,
-        roomId,
+        photoUrl: request.photoUrl || null, roomId,
       },
     });
 
     console.log(`✅ Demande acceptée: ${request.userId} dans ${roomId}`);
-
-    return res.status(200).json({
-      success: true,
-      roomId,
-      requestId,
-      userId: request.userId,
-      status: 'accepted',
-    });
+    return res.status(200).json({ success: true, roomId, requestId, userId: request.userId, status: 'accepted' });
   } catch (error) {
     console.error('❌ Erreur accept request:', error);
-    return res.status(500).json({
-      error: 'Impossible d’accepter la demande',
-      details: error.message,
-    });
+    return res.status(500).json({ error: 'Impossible d\'accepter la demande', details: error.message });
   }
 });
 
@@ -769,59 +678,30 @@ router.post('/live/rooms/:roomId/requests/:requestId/reject', async (req, res) =
   try {
     const { roomId, requestId } = req.params;
     const room = liveRooms.get(roomId);
-
-    if (!room) {
-      return res.status(404).json({ error: 'Room introuvable' });
-    }
+    if (!room) return res.status(404).json({ error: 'Room introuvable' });
 
     const access = ensureHostAccess(req, room);
-    if (!access.ok) {
-      return res.status(access.status).json(access.payload);
-    }
+    if (!access.ok) return res.status(access.status).json(access.payload);
 
     const requests = liveJoinRequests.get(roomId) || [];
     const request = requests.find((r) => r.requestId === requestId);
-
-    if (!request) {
-      return res.status(404).json({ error: 'Demande introuvable' });
-    }
+    if (!request) return res.status(404).json({ error: 'Demande introuvable' });
 
     request.status = 'rejected';
-
-    if (room.requests instanceof Set) {
-      room.requests.delete(request.userId);
-    }
-
-    if (room.invitedUsers instanceof Set) {
-      room.invitedUsers.delete(String(request.userId));
-    }
+    if (room.requests instanceof Set) room.requests.delete(request.userId);
+    if (room.invitedUsers instanceof Set) room.invitedUsers.delete(String(request.userId));
 
     broadcastToRoom(roomId, {
       type: 'liveJoinRequestRejected',
-      from: 'server',
-      to: roomId,
-      data: {
-        requestId,
-        userId: request.userId,
-        roomId,
-      },
+      from: 'server', to: roomId,
+      data: { requestId, userId: request.userId, roomId },
     });
 
     console.log(`❌ Demande rejetée: ${request.userId} dans ${roomId}`);
-
-    return res.status(200).json({
-      success: true,
-      roomId,
-      requestId,
-      userId: request.userId,
-      status: 'rejected',
-    });
+    return res.status(200).json({ success: true, roomId, requestId, userId: request.userId, status: 'rejected' });
   } catch (error) {
     console.error('❌ Erreur reject request:', error);
-    return res.status(500).json({
-      error: 'Impossible de rejeter la demande',
-      details: error.message,
-    });
+    return res.status(500).json({ error: 'Impossible de rejeter la demande', details: error.message });
   }
 });
 
@@ -830,42 +710,21 @@ router.post('/live/rooms/:roomId/moderation/mute', async (req, res) => {
     const { roomId } = req.params;
     const { userId, muted } = req.body || {};
     const room = liveRooms.get(roomId);
-
-    if (!room) {
-      return res.status(404).json({ error: 'Room introuvable' });
-    }
+    if (!room) return res.status(404).json({ error: 'Room introuvable' });
 
     const access = ensureHostAccess(req, room);
-    if (!access.ok) {
-      return res.status(access.status).json(access.payload);
-    }
-
-    if (!userId) {
-      return res.status(400).json({ error: 'userId requis' });
-    }
+    if (!access.ok) return res.status(access.status).json(access.payload);
+    if (!userId) return res.status(400).json({ error: 'userId requis' });
 
     broadcastToRoom(roomId, {
-      type: 'liveModerationMute',
-      from: 'server',
-      to: roomId,
-      data: {
-        userId: String(userId),
-        muted: Boolean(muted),
-      },
+      type: 'liveModerationMute', from: 'server', to: roomId,
+      data: { userId: String(userId), muted: Boolean(muted) },
     });
 
-    return res.status(200).json({
-      success: true,
-      roomId,
-      userId: String(userId),
-      muted: Boolean(muted),
-    });
+    return res.status(200).json({ success: true, roomId, userId: String(userId), muted: Boolean(muted) });
   } catch (error) {
     console.error('❌ Erreur mute user:', error);
-    return res.status(500).json({
-      error: 'Impossible de mute user',
-      details: error.message,
-    });
+    return res.status(500).json({ error: 'Impossible de mute user', details: error.message });
   }
 });
 
@@ -874,76 +733,49 @@ router.post('/live/rooms/:roomId/moderation/kick', async (req, res) => {
     const { roomId } = req.params;
     const { userId } = req.body || {};
     const room = liveRooms.get(roomId);
-
-    if (!room) {
-      return res.status(404).json({ error: 'Room introuvable' });
-    }
-
-    if (!userId) {
-      return res.status(400).json({ error: 'userId requis' });
-    }
+    if (!room) return res.status(404).json({ error: 'Room introuvable' });
+    if (!userId) return res.status(400).json({ error: 'userId requis' });
 
     const actingUserId = getActingUserId(req);
-    if (!actingUserId) {
-      return res.status(401).json({ error: 'Utilisateur non authentifié' });
-    }
+    if (!actingUserId) return res.status(401).json({ error: 'Utilisateur non authentifié' });
 
     const isSelfKick = String(actingUserId) === String(userId);
     const isHostAction = String(room.hostId) === String(actingUserId);
-
-    if (!isSelfKick && !isHostAction) {
-      return res.status(403).json({
-        error: 'Action non autorisée',
-      });
-    }
-
-    if (String(room.hostId) === String(userId)) {
-      return res.status(409).json({
-        error: 'Impossible de retirer le host',
-      });
-    }
+    if (!isSelfKick && !isHostAction) return res.status(403).json({ error: 'Action non autorisée' });
+    if (String(room.hostId) === String(userId)) return res.status(409).json({ error: 'Impossible de retirer le host' });
 
     removeUserFromSet(room?.guests, userId);
     removeUserFromSet(room?.viewers, userId);
+    if (room?.requests instanceof Set) room.requests.delete(String(userId));
+    if (room?.invitedUsers instanceof Set) room.invitedUsers.delete(String(userId));
 
-    if (room?.requests instanceof Set) {
-      room.requests.delete(String(userId));
-    }
-
-    if (room?.invitedUsers instanceof Set) {
-      room.invitedUsers.delete(String(userId));
+    // 🆕 Si la personne kickée était sur le grand écran, le host reprend
+    if (room.bigScreenUserId && String(room.bigScreenUserId) === String(userId)) {
+      room.bigScreenUserId = String(room.hostId);
+      broadcastToRoom(roomId, {
+        type: 'liveBigScreenChanged',
+        from: 'server', to: roomId,
+        data: { roomId, bigScreenUserId: room.bigScreenUserId },
+      });
     }
 
     const requests = liveJoinRequests.get(roomId) || [];
     for (const request of requests) {
-      if (
-        String(request.userId) === String(userId) &&
-        request.status === 'pending'
-      ) {
+      if (String(request.userId) === String(userId) && request.status === 'pending') {
         request.status = 'rejected';
       }
     }
     liveJoinRequests.set(roomId, requests);
 
     broadcastToRoom(roomId, {
-      type: 'liveModerationKick',
-      from: 'server',
-      to: roomId,
+      type: 'liveModerationKick', from: 'server', to: roomId,
       data: { userId: String(userId) },
     });
 
-    return res.status(200).json({
-      success: true,
-      roomId,
-      userId: String(userId),
-      kicked: true,
-    });
+    return res.status(200).json({ success: true, roomId, userId: String(userId), kicked: true });
   } catch (error) {
     console.error('❌ Erreur kick user:', error);
-    return res.status(500).json({
-      error: 'Impossible de kick user',
-      details: error.message,
-    });
+    return res.status(500).json({ error: 'Impossible de kick user', details: error.message });
   }
 });
 
@@ -952,51 +784,25 @@ router.post('/live/rooms/:roomId/moderation/invite', async (req, res) => {
     const { roomId } = req.params;
     const { userId } = req.body || {};
     const room = liveRooms.get(roomId);
-
-    if (!room) {
-      return res.status(404).json({ error: 'Room introuvable' });
-    }
+    if (!room) return res.status(404).json({ error: 'Room introuvable' });
 
     const access = ensureHostAccess(req, room);
-    if (!access.ok) {
-      return res.status(access.status).json(access.payload);
-    }
+    if (!access.ok) return res.status(access.status).json(access.payload);
+    if (room.isActive !== true) return res.status(409).json({ error: 'Ce live est terminé' });
+    if (!userId) return res.status(400).json({ error: 'userId requis' });
+    if (isBlocked(room, userId)) return res.status(403).json({ error: 'Utilisateur bloqué' });
+    if (String(room.hostId) === String(userId)) return res.status(409).json({ error: 'Impossible d\'inviter le host' });
+    if (setHasRealUser(room.guests, userId)) return res.status(409).json({ error: 'Utilisateur déjà guest' });
 
-    if (room.isActive !== true) {
-      return res.status(409).json({ error: 'Ce live est terminé' });
-    }
-
-    if (!userId) {
-      return res.status(400).json({ error: 'userId requis' });
-    }
-
-    if (isBlocked(room, userId)) {
-      return res.status(403).json({ error: 'Utilisateur bloqué' });
-    }
-
-    if (String(room.hostId) === String(userId)) {
-      return res.status(409).json({ error: 'Impossible d’inviter le host' });
-    }
-
-    if (setHasRealUser(room.guests, userId)) {
-      return res.status(409).json({ error: 'Utilisateur déjà guest' });
-    }
-
-    if (!(room.invitedUsers instanceof Set)) {
-      room.invitedUsers = new Set();
-    }
-
+    if (!(room.invitedUsers instanceof Set)) room.invitedUsers = new Set();
     room.invitedUsers.add(String(userId));
 
     const requests = liveJoinRequests.get(roomId) || [];
     const existing = requests.find(
-      (r) =>
-        String(r.userId) === String(userId) &&
-        (r.status === 'pending' || r.status === 'invited')
+      (r) => String(r.userId) === String(userId) && (r.status === 'pending' || r.status === 'invited')
     );
 
     let requestId = null;
-
     if (existing) {
       existing.status = 'invited';
       existing.message = 'Invitation du host';
@@ -1004,43 +810,23 @@ router.post('/live/rooms/:roomId/moderation/invite', async (req, res) => {
     } else {
       requestId = crypto.randomUUID();
       requests.push({
-        requestId,
-        roomId,
-        userId: String(userId),
-        userName: String(userId),
-        photoUrl: null,
-        message: 'Invitation du host',
-        createdAt: new Date().toISOString(),
-        status: 'invited',
+        requestId, roomId, userId: String(userId), userName: String(userId),
+        photoUrl: null, message: 'Invitation du host',
+        createdAt: new Date().toISOString(), status: 'invited',
       });
     }
 
     liveJoinRequests.set(roomId, requests);
 
     broadcastToRoom(roomId, {
-      type: 'liveGuestInvited',
-      from: 'server',
-      to: roomId,
-      data: {
-        roomId,
-        userId: String(userId),
-        requestId,
-      },
+      type: 'liveGuestInvited', from: 'server', to: roomId,
+      data: { roomId, userId: String(userId), requestId },
     });
 
-    return res.status(200).json({
-      success: true,
-      roomId,
-      userId: String(userId),
-      requestId,
-      invited: true,
-    });
+    return res.status(200).json({ success: true, roomId, userId: String(userId), requestId, invited: true });
   } catch (error) {
     console.error('❌ Erreur invite guest:', error);
-    return res.status(500).json({
-      error: 'Impossible d’inviter le participant',
-      details: error.message,
-    });
+    return res.status(500).json({ error: 'Impossible d\'inviter le participant', details: error.message });
   }
 });
 
@@ -1049,60 +835,41 @@ router.post('/live/rooms/:roomId/moderation/remove-guest', async (req, res) => {
     const { roomId } = req.params;
     const { userId } = req.body || {};
     const room = liveRooms.get(roomId);
-
-    if (!room) {
-      return res.status(404).json({ error: 'Room introuvable' });
-    }
+    if (!room) return res.status(404).json({ error: 'Room introuvable' });
 
     const access = ensureHostAccess(req, room);
-    if (!access.ok) {
-      return res.status(access.status).json(access.payload);
-    }
-
-    if (room.isActive !== true) {
-      return res.status(409).json({ error: 'Ce live est terminé' });
-    }
-
-    if (!userId) {
-      return res.status(400).json({ error: 'userId requis' });
-    }
+    if (!access.ok) return res.status(access.status).json(access.payload);
+    if (room.isActive !== true) return res.status(409).json({ error: 'Ce live est terminé' });
+    if (!userId) return res.status(400).json({ error: 'userId requis' });
 
     removeUserFromSet(room.guests, userId);
     removeUserFromSet(room.viewers, userId);
 
-    room.viewers.add(
-      buildUniqueParticipantIdentity({
-        userId: String(userId),
-        role: 'audience',
-        roomId,
-        deviceId: crypto.randomUUID(),
-      })
-    );
+    room.viewers.add(buildUniqueParticipantIdentity({
+      userId: String(userId), role: 'audience', roomId, deviceId: crypto.randomUUID(),
+    }));
+
+    // 🆕 Si le guest retiré était sur le grand écran, le host reprend
+    if (room.bigScreenUserId && String(room.bigScreenUserId) === String(userId)) {
+      room.bigScreenUserId = String(room.hostId);
+      broadcastToRoom(roomId, {
+        type: 'liveBigScreenChanged',
+        from: 'server', to: roomId,
+        data: { roomId, bigScreenUserId: room.bigScreenUserId },
+      });
+    }
 
     syncRoomStats(room);
 
     broadcastToRoom(roomId, {
-      type: 'liveGuestRemoved',
-      from: 'server',
-      to: roomId,
-      data: {
-        roomId,
-        userId: String(userId),
-      },
+      type: 'liveGuestRemoved', from: 'server', to: roomId,
+      data: { roomId, userId: String(userId) },
     });
 
-    return res.status(200).json({
-      success: true,
-      roomId,
-      userId: String(userId),
-      removed: true,
-    });
+    return res.status(200).json({ success: true, roomId, userId: String(userId), removed: true });
   } catch (error) {
     console.error('❌ Erreur remove guest:', error);
-    return res.status(500).json({
-      error: 'Impossible de retirer le guest',
-      details: error.message,
-    });
+    return res.status(500).json({ error: 'Impossible de retirer le guest', details: error.message });
   }
 });
 
@@ -1111,49 +878,34 @@ router.post('/live/rooms/:roomId/moderation/block', async (req, res) => {
     const { roomId } = req.params;
     const { userId } = req.body || {};
     const room = liveRooms.get(roomId);
-
-    if (!room) {
-      return res.status(404).json({ error: 'Room introuvable' });
-    }
+    if (!room) return res.status(404).json({ error: 'Room introuvable' });
 
     const access = ensureHostAccess(req, room);
-    if (!access.ok) {
-      return res.status(access.status).json(access.payload);
-    }
+    if (!access.ok) return res.status(access.status).json(access.payload);
+    if (!userId) return res.status(400).json({ error: 'userId requis' });
+    if (String(room.hostId) === String(userId)) return res.status(409).json({ error: 'Impossible de bloquer le host' });
 
-    if (!userId) {
-      return res.status(400).json({ error: 'userId requis' });
-    }
-
-    if (String(room.hostId) === String(userId)) {
-      return res.status(409).json({ error: 'Impossible de bloquer le host' });
-    }
-
-    if (!(room.blockedUsers instanceof Set)) {
-      room.blockedUsers = new Set();
-    }
-
+    if (!(room.blockedUsers instanceof Set)) room.blockedUsers = new Set();
     room.blockedUsers.add(String(userId));
-
     removeUserFromSet(room.guests, userId);
     removeUserFromSet(room.viewers, userId);
+    if (room.requests instanceof Set) room.requests.delete(String(userId));
+    if (room.invitedUsers instanceof Set) room.invitedUsers.delete(String(userId));
 
-    if (room.requests instanceof Set) {
-      room.requests.delete(String(userId));
-    }
-
-    if (room.invitedUsers instanceof Set) {
-      room.invitedUsers.delete(String(userId));
+    // 🆕 Si la personne bloquée était sur le grand écran
+    if (room.bigScreenUserId && String(room.bigScreenUserId) === String(userId)) {
+      room.bigScreenUserId = String(room.hostId);
+      broadcastToRoom(roomId, {
+        type: 'liveBigScreenChanged',
+        from: 'server', to: roomId,
+        data: { roomId, bigScreenUserId: room.bigScreenUserId },
+      });
     }
 
     const requests = liveJoinRequests.get(roomId) || [];
     for (const request of requests) {
-      if (
-        String(request.userId) === String(userId) &&
-        (request.status === 'pending' ||
-          request.status === 'accepted' ||
-          request.status === 'invited')
-      ) {
+      if (String(request.userId) === String(userId) &&
+          (request.status === 'pending' || request.status === 'accepted' || request.status === 'invited')) {
         request.status = 'blocked';
       }
     }
@@ -1162,27 +914,14 @@ router.post('/live/rooms/:roomId/moderation/block', async (req, res) => {
     syncRoomStats(room);
 
     broadcastToRoom(roomId, {
-      type: 'liveUserBlocked',
-      from: 'server',
-      to: roomId,
-      data: {
-        roomId,
-        userId: String(userId),
-      },
+      type: 'liveUserBlocked', from: 'server', to: roomId,
+      data: { roomId, userId: String(userId) },
     });
 
-    return res.status(200).json({
-      success: true,
-      roomId,
-      userId: String(userId),
-      blocked: true,
-    });
+    return res.status(200).json({ success: true, roomId, userId: String(userId), blocked: true });
   } catch (error) {
     console.error('❌ Erreur block user:', error);
-    return res.status(500).json({
-      error: 'Impossible de bloquer le participant',
-      details: error.message,
-    });
+    return res.status(500).json({ error: 'Impossible de bloquer le participant', details: error.message });
   }
 });
 
