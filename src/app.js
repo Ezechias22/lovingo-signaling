@@ -13,6 +13,7 @@ const pushRoutes = require('./routes/push.routes');
 const publicIdRoutes = require('./routes/public-id.routes');
 const fraudAdminRoutes = require('./routes/fraud-admin.routes');
 const adminRoutes = require('./routes/admin.routes');
+const pkRoutes = require('./routes/pk.routes');
 
 function createCorsOptions() {
   const allowedOrigins = new Set([
@@ -69,6 +70,7 @@ function registerRoutes(app) {
   app.use(fraudAdminRoutes);
   app.use(adminRoutes);
   app.use(liveRoutes);
+  app.use(pkRoutes);
   app.use(systemRoutes);
   app.use('/api/push', pushRoutes);
 }
