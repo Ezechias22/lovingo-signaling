@@ -1,3 +1,8 @@
+node_modules/
+.env
+*.log
 
 firebase-admin.json
 signaling_server/firebase-admin.json
+google-service-account.json
+src/config/google-play-service-account.json
