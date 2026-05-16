@@ -8,7 +8,7 @@ const RENDER_URL =
 
 const PLAYSTORE_URL =
   process.env.PLAYSTORE_URL ||
-  'https://play.google.com/store/apps/details?id=com.lovingo2.app&pcampaignid=web_share';
+  'https://play.google.com/store/apps/details?id=com.lovingo2.app';
 
 const LIVEKIT_URL = process.env.LIVEKIT_URL || '';
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || '';
