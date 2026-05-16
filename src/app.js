@@ -15,6 +15,12 @@ const fraudAdminRoutes = require('./routes/fraud-admin.routes');
 const adminRoutes = require('./routes/admin.routes');
 const pkRoutes = require('./routes/pk.routes');
 
+// 🆕 Nouvelles intégrations
+const mercadopagoRoutes = require('./routes/mercadopago.routes');
+const paypalRoutes = require('./routes/paypal.routes');
+const googleplayRoutes = require('./routes/googleplay.routes');
+const paypalCheckoutPageRoutes = require('./routes/paypal-checkout-page.routes');
+
 function createCorsOptions() {
   const allowedOrigins = new Set([
     'https://lovingo.app',
@@ -22,6 +28,10 @@ function createCorsOptions() {
     'https://lovingo-signaling.onrender.com',
     'http://localhost:3000',
     'http://localhost:8080',
+    // 🆕 Origines pour Smart Buttons et webhooks
+    'https://www.paypal.com',
+    'https://www.sandbox.paypal.com',
+    'https://www.mercadopago.com',
   ]);
 
   return {
@@ -51,6 +61,7 @@ function registerCoreMiddlewares(app) {
 
   app.use(cors(createCorsOptions()));
 
+  // ⚠️ Webhook Stripe DOIT être avant express.json() pour préserver le raw body
   app.post(
     '/api/stripe/webhook',
     express.raw({ type: 'application/json' }),
@@ -71,6 +82,13 @@ function registerRoutes(app) {
   app.use(adminRoutes);
   app.use(liveRoutes);
   app.use(pkRoutes);
+
+  // 🆕 Nouvelles intégrations de paiement
+  app.use(mercadopagoRoutes);
+  app.use(paypalRoutes);
+  app.use(googleplayRoutes);
+  app.use(paypalCheckoutPageRoutes);
+
   app.use(systemRoutes);
   app.use('/api/push', pushRoutes);
 }
