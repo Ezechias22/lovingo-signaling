@@ -22,20 +22,42 @@ const googleplayRoutes = require('./routes/googleplay.routes');
 const paypalCheckoutPageRoutes = require('./routes/paypal-checkout-page.routes');
 
 function createCorsOptions() {
-  const allowedOrigins = new Set([
+  // 🆕 Whitelist de base + ajouts via variable d'environnement ALLOWED_ORIGINS
+  const baseOrigins = [
+    // Domaine principal
+    'https://lovingosocial.com',
+    'https://www.lovingosocial.com',
+
+    // Domaine Render (utilisé en interne / fallback)
+    'https://lovingo-signaling.onrender.com',
+
+    // Anciens domaines (au cas où)
     'https://lovingo.app',
     'https://www.lovingo.app',
-    'https://lovingo-signaling.onrender.com',
+
+    // Développement local
     'http://localhost:3000',
     'http://localhost:8080',
-    // 🆕 Origines pour Smart Buttons et webhooks
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:8080',
+
+    // Smart Buttons / webhooks tiers
     'https://www.paypal.com',
     'https://www.sandbox.paypal.com',
     'https://www.mercadopago.com',
-  ]);
+  ];
+
+  // 🆕 Ajout dynamique depuis env (ex: ALLOWED_ORIGINS=https://staging.lovingosocial.com,https://test.example.com)
+  const envOrigins = (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  const allowedOrigins = new Set([...baseOrigins, ...envOrigins]);
 
   return {
     origin(origin, callback) {
+      // Requêtes sans Origin (curl, apps mobiles natives, server-to-server) : autorisées
       if (!origin) return callback(null, true);
 
       if (allowedOrigins.has(origin)) {
@@ -58,6 +80,9 @@ function createCorsOptions() {
 
 function registerCoreMiddlewares(app) {
   app.disable('x-powered-by');
+
+  // 🆕 Trust proxy (nécessaire derrière Render / Cloudflare pour récupérer la vraie IP via x-forwarded-for)
+  app.set('trust proxy', 1);
 
   app.use(cors(createCorsOptions()));
 
@@ -109,6 +134,7 @@ function registerErrorHandlers(app) {
     if (error?.message === 'Not allowed by CORS') {
       return res.status(403).json({
         error: 'Origine non autorisée',
+        origin: req.headers.origin || null,
         timestamp: new Date().toISOString(),
       });
     }
