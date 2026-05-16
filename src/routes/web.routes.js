@@ -71,7 +71,7 @@ router.get('/.well-known/assetlinks.json', (req, res) => {
         namespace: 'android_app',
         package_name: APP_PACKAGE,
         sha256_cert_fingerprints: [
-          'VOTRE_SHA256_ICI' // À récupérer dans Play Console → Setup → App integrity
+          '09:D6:0E:AE:0D:11:53:4F:0B:6A:B0:6C:6E:E4:F4:C0:1A:4F:9F:D8:FF:EC:ED:0A:30:A8:30:30:D2:4E:CA:97'
         ]
       }
     }
