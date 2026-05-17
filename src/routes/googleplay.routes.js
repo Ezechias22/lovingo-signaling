@@ -8,7 +8,7 @@ const { admin, getFirestore } = require('../services/firebase.service');
 const router = express.Router();
 
 const COIN_PRODUCTS = {
-  coins_starter: { id: 'coins_starter', coins: 25000 },
+  coins_starter1: { id: 'coins_starter1', coins: 25000 },
   coins_popular: { id: 'coins_popular', coins: 60000 },
   coins_mega: { id: 'coins_mega', coins: 125000 },
   coins_vip: { id: 'coins_vip', coins: 275000 },
