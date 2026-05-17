@@ -15,39 +15,27 @@ const fraudAdminRoutes = require('./routes/fraud-admin.routes');
 const adminRoutes = require('./routes/admin.routes');
 const pkRoutes = require('./routes/pk.routes');
 
-// 🆕 Nouvelles intégrations
 const mercadopagoRoutes = require('./routes/mercadopago.routes');
 const paypalRoutes = require('./routes/paypal.routes');
 const googleplayRoutes = require('./routes/googleplay.routes');
 const paypalCheckoutPageRoutes = require('./routes/paypal-checkout-page.routes');
 
 function createCorsOptions() {
-  // 🆕 Whitelist de base + ajouts via variable d'environnement ALLOWED_ORIGINS
   const baseOrigins = [
-    // Domaine principal
     'https://lovingosocial.com',
     'https://www.lovingosocial.com',
-
-    // Domaine Render (utilisé en interne / fallback)
     'https://lovingo-signaling.onrender.com',
-
-    // Anciens domaines (au cas où)
     'https://lovingo.app',
     'https://www.lovingo.app',
-
-    // Développement local
     'http://localhost:3000',
     'http://localhost:8080',
     'http://127.0.0.1:3000',
     'http://127.0.0.1:8080',
-
-    // Smart Buttons / webhooks tiers
     'https://www.paypal.com',
     'https://www.sandbox.paypal.com',
     'https://www.mercadopago.com',
   ];
 
-  // 🆕 Ajout dynamique depuis env (ex: ALLOWED_ORIGINS=https://staging.lovingosocial.com,https://test.example.com)
   const envOrigins = (process.env.ALLOWED_ORIGINS || '')
     .split(',')
     .map((o) => o.trim())
@@ -57,36 +45,24 @@ function createCorsOptions() {
 
   return {
     origin(origin, callback) {
-      // Requêtes sans Origin (curl, apps mobiles natives, server-to-server) : autorisées
       if (!origin) return callback(null, true);
-
-      if (allowedOrigins.has(origin)) {
-        return callback(null, true);
-      }
-
+      if (allowedOrigins.has(origin)) return callback(null, true);
       console.warn(`⚠️ CORS refusé pour origin: ${origin}`);
       return callback(new Error('Not allowed by CORS'));
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'x-user-id',
-      'x-admin-secret',
-    ],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-admin-secret'],
     credentials: false,
   };
 }
 
 function registerCoreMiddlewares(app) {
   app.disable('x-powered-by');
-
-  // 🆕 Trust proxy (nécessaire derrière Render / Cloudflare pour récupérer la vraie IP via x-forwarded-for)
   app.set('trust proxy', 1);
 
   app.use(cors(createCorsOptions()));
 
-  // ⚠️ Webhook Stripe DOIT être avant express.json() pour préserver le raw body
+  // ⚠️ Webhook Stripe DOIT être avant express.json()
   app.post(
     '/api/stripe/webhook',
     express.raw({ type: 'application/json' }),
@@ -99,16 +75,22 @@ function registerCoreMiddlewares(app) {
 }
 
 function registerRoutes(app) {
-  app.use(webRoutes);
+  // 🔴 IMPORTANT : Les routes API DOIVENT être enregistrées AVANT webRoutes
+  // car webRoutes contient des patterns "catch-all" comme /live/:roomId
+  // qui matcheraient sinon /live/rooms, /live/health, etc.
+
+  // ============================================
+  // 1️⃣ ROUTES API (en premier)
+  // ============================================
   app.use(paymentRoutes);
   app.use(giftRoutes);
   app.use(publicIdRoutes);
   app.use(fraudAdminRoutes);
   app.use(adminRoutes);
-  app.use(liveRoutes);
+  app.use(liveRoutes);      // ✅ /live/rooms, /live/health, /live/rooms/:id, etc.
   app.use(pkRoutes);
 
-  // 🆕 Nouvelles intégrations de paiement
+  // Intégrations de paiement
   app.use(mercadopagoRoutes);
   app.use(paypalRoutes);
   app.use(googleplayRoutes);
@@ -116,6 +98,13 @@ function registerRoutes(app) {
 
   app.use(systemRoutes);
   app.use('/api/push', pushRoutes);
+
+  // ============================================
+  // 2️⃣ ROUTES WEB (HTML) — EN DERNIER
+  // ============================================
+  // ⚠️ webRoutes contient /live/:roomId (page de partage HTML)
+  // qui doit être enregistré APRÈS toutes les routes API /live/*
+  app.use(webRoutes);
 }
 
 function registerErrorHandlers(app) {
@@ -152,11 +141,9 @@ function registerErrorHandlers(app) {
 
 function createApp() {
   const app = express();
-
   registerCoreMiddlewares(app);
   registerRoutes(app);
   registerErrorHandlers(app);
-
   return app;
 }
 
