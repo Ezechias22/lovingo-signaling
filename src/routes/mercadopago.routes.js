@@ -20,18 +20,16 @@ const FX_FROM_USD = {
   CLP: 920, COP: 4000, PEN: 3.7, UYU: 39.5, CAD: 1.36,
 };
 
-function db() {
-  return getFirestore();
-}
+function db() { return getFirestore(); }
 
 function getClientIp(req) {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (forwarded) return String(forwarded).split(',')[0].trim();
+  const f = req.headers['x-forwarded-for'];
+  if (f) return String(f).split(',')[0].trim();
   return req.socket?.remoteAddress || 'unknown';
 }
 
-function hashValue(value) {
-  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
+function hashValue(v) {
+  return crypto.createHash('sha256').update(String(v || '')).digest('hex');
 }
 
 function convertUsdTo(usd, currency) {
@@ -44,14 +42,9 @@ async function ensureWalletExists(userId) {
   const doc = await ref.get();
   if (!doc.exists) {
     await ref.set({
-      balance: 0,
-      totalEarnings: 0,
-      pendingWithdrawal: 0,
-      coinBalance: 0,
-      coinsPurchased: 0,
-      coinsSpent: 0,
-      totalGiftEarnings: 0,
-      paymentMethod: null,
+      balance: 0, totalEarnings: 0, pendingWithdrawal: 0,
+      coinBalance: 0, coinsPurchased: 0, coinsSpent: 0,
+      totalGiftEarnings: 0, paymentMethod: null,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
     });
@@ -74,23 +67,15 @@ async function creditCoins({ userId, coins, packageId, source, externalRef, amou
     });
 
     tx.set(txRef, {
-      userId,
-      type: 'coinPurchase',
-      direction: 'credit',
-      coins,
-      packageId,
-      source,
-      externalRef,
-      amountPaid: amountPaid || null,
-      currency: currency || null,
+      userId, type: 'coinPurchase', direction: 'credit',
+      coins, packageId, source, externalRef,
+      amountPaid: amountPaid || null, currency: currency || null,
       status: 'completed',
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
     });
 
     tx.set(db().collection('wallet_transactions').doc(), {
-      userId,
-      type: 'coinPurchase',
-      amount: 0,
+      userId, type: 'coinPurchase', amount: 0,
       description: `Achat coins (${source}): ${coins} coins`,
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
       metadata: { coins, packageId, source, externalRef, amountPaid, currency },
@@ -98,9 +83,6 @@ async function creditCoins({ userId, coins, packageId, source, externalRef, amou
   });
 }
 
-// ============================================
-// 📋 GET /api/mercadopago/config
-// ============================================
 router.get('/api/mercadopago/config', (req, res) => {
   res.json({
     publicKey: mp.getPublicKey(),
@@ -109,8 +91,7 @@ router.get('/api/mercadopago/config', (req, res) => {
 });
 
 // ============================================
-// 💳 POST /api/mercadopago/create-coin-payment
-// Body: { userId, packageId, currency, cardToken, paymentMethodId, installments, payerEmail, payerCpf, issuerId }
+// 💳 Achat coins par CARTE
 // ============================================
 router.post('/api/mercadopago/create-coin-payment', async (req, res) => {
   try {
@@ -129,7 +110,6 @@ router.post('/api/mercadopago/create-coin-payment', async (req, res) => {
     if (!pkg) return res.status(400).json({ error: 'Package invalide' });
 
     await ensureWalletExists(userId);
-
     const localAmount = convertUsdTo(pkg.usd, currency);
     const idempotencyKey = crypto.randomUUID();
 
@@ -149,26 +129,17 @@ router.post('/api/mercadopago/create-coin-payment', async (req, res) => {
       external_reference: `mp_coin_${userId}_${Date.now()}`,
       notification_url: `${req.protocol}://${req.get('host')}/api/mercadopago/webhook`,
       metadata: {
-        app: 'lovingo',
-        type: 'coin_purchase',
-        userId,
-        packageId,
-        coins: String(pkg.coins),
-        usd: String(pkg.usd),
+        app: 'lovingo', type: 'coin_purchase',
+        userId, packageId, coins: String(pkg.coins), usd: String(pkg.usd),
       },
     };
 
     const payment = await mp.createPayment(paymentBody, idempotencyKey);
 
     await db().collection('mp_payment_logs').doc(String(payment.id)).set({
-      paymentId: payment.id,
-      type: 'coin_purchase',
-      userId,
-      packageId,
-      coins: pkg.coins,
-      usd: pkg.usd,
-      amount: localAmount,
-      currency: String(currency).toUpperCase(),
+      paymentId: payment.id, type: 'coin_purchase', method: 'card',
+      userId, packageId, coins: pkg.coins, usd: pkg.usd,
+      amount: localAmount, currency: String(currency).toUpperCase(),
       status: payment.status,
       ipHash: hashValue(getClientIp(req)),
       externalReference: paymentBody.external_reference,
@@ -177,22 +148,16 @@ router.post('/api/mercadopago/create-coin-payment', async (req, res) => {
 
     if (payment.status === 'approved') {
       await creditCoins({
-        userId,
-        coins: pkg.coins,
-        packageId,
-        source: 'mercadopago',
-        externalRef: `mp_${payment.id}`,
-        amountPaid: localAmount,
-        currency,
+        userId, coins: pkg.coins, packageId,
+        source: 'mercadopago', externalRef: `mp_${payment.id}`,
+        amountPaid: localAmount, currency,
       });
     }
 
     res.json({
-      paymentId: payment.id,
-      status: payment.status,
+      paymentId: payment.id, status: payment.status,
       statusDetail: payment.status_detail,
-      coins: pkg.coins,
-      amount: localAmount,
+      coins: pkg.coins, amount: localAmount,
       currency: String(currency).toUpperCase(),
     });
   } catch (e) {
@@ -202,8 +167,126 @@ router.post('/api/mercadopago/create-coin-payment', async (req, res) => {
 });
 
 // ============================================
-// 💎 POST /api/mercadopago/create-premium-payment
-// Body: { userId, planId, currency, cardToken, paymentMethodId, installments, payerEmail, payerCpf }
+// 🟢 NOUVEAU : Achat coins par PIX (QR Code)
+// ============================================
+router.post('/api/mercadopago/create-pix-coin-payment', async (req, res) => {
+  try {
+    const {
+      userId, packageId, currency = 'BRL',
+      payerEmail, payerCpf, payerFirstName, payerLastName,
+    } = req.body;
+
+    if (!userId) return res.status(400).json({ error: 'userId requis' });
+    if (!payerEmail) return res.status(400).json({ error: 'payerEmail requis' });
+    if (!payerCpf) return res.status(400).json({ error: 'CPF requis pour PIX' });
+
+    const cpfClean = String(payerCpf).replace(/\D/g, '');
+    if (cpfClean.length !== 11) {
+      return res.status(400).json({ error: 'CPF doit contenir 11 chiffres' });
+    }
+
+    const pkg = COIN_PACKAGES[packageId];
+    if (!pkg) return res.status(400).json({ error: 'Package invalide' });
+
+    await ensureWalletExists(userId);
+
+    // PIX est uniquement en BRL
+    const localAmount = convertUsdTo(pkg.usd, 'BRL');
+    const idempotencyKey = crypto.randomUUID();
+    const externalRef = `mp_pix_coin_${userId}_${Date.now()}`;
+
+    const paymentBody = {
+      transaction_amount: localAmount,
+      description: `Lovingo - ${pkg.name} (${pkg.coins} coins)`,
+      payment_method_id: 'pix',
+      payer: {
+        email: payerEmail,
+        first_name: payerFirstName || 'Lovingo',
+        last_name: payerLastName || 'User',
+        identification: { type: 'CPF', number: cpfClean },
+      },
+      external_reference: externalRef,
+      notification_url: `${req.protocol}://${req.get('host')}/api/mercadopago/webhook`,
+      date_of_expiration: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      metadata: {
+        app: 'lovingo', type: 'coin_purchase', method: 'pix',
+        userId, packageId, coins: String(pkg.coins), usd: String(pkg.usd),
+      },
+    };
+
+    const payment = await mp.createPixPayment(paymentBody, idempotencyKey);
+
+    const qrCode = payment.point_of_interaction?.transaction_data?.qr_code || '';
+    const qrCodeBase64 = payment.point_of_interaction?.transaction_data?.qr_code_base64 || '';
+    const ticketUrl = payment.point_of_interaction?.transaction_data?.ticket_url || '';
+
+    await db().collection('mp_payment_logs').doc(String(payment.id)).set({
+      paymentId: payment.id, type: 'coin_purchase', method: 'pix',
+      userId, packageId, coins: pkg.coins, usd: pkg.usd,
+      amount: localAmount, currency: 'BRL',
+      status: payment.status,
+      ipHash: hashValue(getClientIp(req)),
+      externalReference: externalRef,
+      qrCode, ticketUrl,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    res.json({
+      paymentId: payment.id,
+      status: payment.status,
+      statusDetail: payment.status_detail,
+      coins: pkg.coins,
+      amount: localAmount,
+      currency: 'BRL',
+      qrCode,
+      qrCodeBase64,
+      ticketUrl,
+      expiresAt: paymentBody.date_of_expiration,
+    });
+  } catch (e) {
+    console.error('❌ MP create-pix-coin-payment:', e.message, e.body);
+    res.status(400).json({ error: e.message, details: e.body });
+  }
+});
+
+// ============================================
+// 🟢 NOUVEAU : Vérifier statut paiement PIX (polling)
+// ============================================
+router.get('/api/mercadopago/check-payment-status/:paymentId', async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+    if (!paymentId) return res.status(400).json({ error: 'paymentId requis' });
+
+    const payment = await mp.getPayment(paymentId);
+    const meta = payment.metadata || {};
+
+    // Si approuvé et coins pas encore crédités, on crédite ici
+    if (payment.status === 'approved' && meta.app === 'lovingo' && meta.type === 'coin_purchase') {
+      await creditCoins({
+        userId: meta.userId,
+        coins: parseInt(meta.coins) || 0,
+        packageId: meta.packageId,
+        source: 'mercadopago_pix',
+        externalRef: `mp_${payment.id}`,
+        amountPaid: payment.transaction_amount,
+        currency: payment.currency_id,
+      });
+    }
+
+    res.json({
+      paymentId: payment.id,
+      status: payment.status,
+      statusDetail: payment.status_detail,
+      coins: parseInt(meta.coins) || 0,
+    });
+  } catch (e) {
+    console.error('❌ MP check-payment-status:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ============================================
+// 💎 Achat Premium par carte
 // ============================================
 router.post('/api/mercadopago/create-premium-payment', async (req, res) => {
   try {
@@ -238,46 +321,34 @@ router.post('/api/mercadopago/create-premium-payment', async (req, res) => {
       external_reference: externalRef,
       notification_url: `${req.protocol}://${req.get('host')}/api/mercadopago/webhook`,
       metadata: {
-        app: 'lovingo',
-        type: 'premium_purchase',
-        userId,
-        planId: plan.id,
-        durationDays: String(plan.durationDays),
+        app: 'lovingo', type: 'premium_purchase',
+        userId, planId: plan.id, durationDays: String(plan.durationDays),
       },
     };
 
     const payment = await mp.createPayment(paymentBody, idempotencyKey);
 
     await db().collection('mp_payment_logs').doc(String(payment.id)).set({
-      paymentId: payment.id,
-      type: 'premium_purchase',
-      userId,
-      planId: plan.id,
-      amount: localAmount,
-      currency: String(currency).toUpperCase(),
-      status: payment.status,
-      externalReference: externalRef,
+      paymentId: payment.id, type: 'premium_purchase',
+      userId, planId: plan.id,
+      amount: localAmount, currency: String(currency).toUpperCase(),
+      status: payment.status, externalReference: externalRef,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
     if (payment.status === 'approved') {
       await premiumService.activatePremium({
-        userId,
-        planId: plan.id,
-        source: 'mercadopago',
+        userId, planId: plan.id, source: 'mercadopago',
         durationDays: plan.durationDays,
         externalReference: externalRef,
-        amountPaid: localAmount,
-        currency,
+        amountPaid: localAmount, currency,
       });
     }
 
     res.json({
-      paymentId: payment.id,
-      status: payment.status,
+      paymentId: payment.id, status: payment.status,
       statusDetail: payment.status_detail,
-      planId: plan.id,
-      amount: localAmount,
+      planId: plan.id, amount: localAmount,
       currency: String(currency).toUpperCase(),
     });
   } catch (e) {
@@ -287,7 +358,7 @@ router.post('/api/mercadopago/create-premium-payment', async (req, res) => {
 });
 
 // ============================================
-// 🔔 POST /api/mercadopago/webhook
+// 🔔 Webhook Mercado Pago
 // ============================================
 router.post('/api/mercadopago/webhook', async (req, res) => {
   try {
@@ -296,9 +367,7 @@ router.post('/api/mercadopago/webhook', async (req, res) => {
     const dataId = req.body?.data?.id || req.query?.['data.id'] || req.query?.id;
 
     const isValid = mp.verifyWebhookSignature({
-      signatureHeader: sigHeader,
-      requestId,
-      dataId,
+      signatureHeader: sigHeader, requestId, dataId,
     });
 
     if (!isValid && process.env.NODE_ENV === 'production') {
@@ -315,9 +384,7 @@ router.post('/api/mercadopago/webhook', async (req, res) => {
     }
 
     await eventRef.set({
-      type: req.body?.type,
-      action: req.body?.action,
-      dataId,
+      type: req.body?.type, action: req.body?.action, dataId,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
@@ -325,14 +392,11 @@ router.post('/api/mercadopago/webhook', async (req, res) => {
       const payment = await mp.getPayment(dataId);
       const meta = payment.metadata || {};
 
-      await db().collection('mp_payment_logs').doc(String(payment.id)).set(
-        {
-          status: payment.status,
-          statusDetail: payment.status_detail,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
+      await db().collection('mp_payment_logs').doc(String(payment.id)).set({
+        status: payment.status,
+        statusDetail: payment.status_detail,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
 
       if (payment.status === 'approved' && meta.app === 'lovingo') {
         if (meta.type === 'coin_purchase') {
@@ -340,15 +404,14 @@ router.post('/api/mercadopago/webhook', async (req, res) => {
             userId: meta.userId,
             coins: parseInt(meta.coins) || 0,
             packageId: meta.packageId,
-            source: 'mercadopago',
+            source: meta.method === 'pix' ? 'mercadopago_pix' : 'mercadopago',
             externalRef: `mp_${payment.id}`,
             amountPaid: payment.transaction_amount,
             currency: payment.currency_id,
           });
         } else if (meta.type === 'premium_purchase') {
           await premiumService.activatePremium({
-            userId: meta.userId,
-            planId: meta.planId,
+            userId: meta.userId, planId: meta.planId,
             source: 'mercadopago',
             durationDays: parseInt(meta.durationDays) || 30,
             externalReference: payment.external_reference,
@@ -358,7 +421,6 @@ router.post('/api/mercadopago/webhook', async (req, res) => {
         }
       }
     }
-
     res.json({ received: true });
   } catch (e) {
     console.error('❌ MP webhook:', e);
@@ -367,81 +429,108 @@ router.post('/api/mercadopago/webhook', async (req, res) => {
 });
 
 // ============================================
-// 💸 POST /api/mercadopago/payout-pix
-// Body: { userId, withdrawalId, amount, currency, pixKey, pixKeyType, recipientName, recipientEmail, recipientCpf }
+// 💸 Retrait PIX — TRAITEMENT MANUEL ADMIN
+// (Mercado Pago ne fournit pas d'API payout PIX publique)
 // ============================================
 router.post('/api/mercadopago/payout-pix', async (req, res) => {
   try {
     const {
       userId, withdrawalId, amount, currency = 'BRL',
       pixKey, pixKeyType = 'cpf',
-      recipientName, recipientEmail, recipientCpf,
+      recipientName, recipientEmail,
     } = req.body;
 
     if (!userId) return res.status(400).json({ error: 'userId requis' });
     if (!amount || amount <= 0) return res.status(400).json({ error: 'Montant invalide' });
     if (!pixKey) return res.status(400).json({ error: 'pixKey requis' });
 
-    if (pixKeyType === 'cpf' && !/^\d{11}$/.test(String(pixKey).replace(/\D/g, ''))) {
+    // Validation des formats de clés PIX
+    const cleanKey = String(pixKey).trim();
+    if (pixKeyType === 'cpf' && !/^\d{11}$/.test(cleanKey.replace(/\D/g, ''))) {
       return res.status(400).json({ error: 'CPF doit contenir 11 chiffres' });
     }
-
-    const idempotencyKey = withdrawalId || crypto.randomUUID();
-
-    const payoutBody = {
-      transaction_amount: Number(amount),
-      description: `Lovingo - Retrait ${userId}`,
-      external_reference: withdrawalId || `pix_${userId}_${Date.now()}`,
-      receiver: {
-        identification: {
-          type: pixKeyType.toUpperCase(),
-          number: String(pixKey).replace(/\D/g, ''),
-        },
-        first_name: recipientName || '',
-        email: recipientEmail || '',
-      },
-      payer: {
-        type: 'collector',
-      },
-      metadata: {
-        app: 'lovingo',
-        type: 'pix_payout',
-        userId,
-        withdrawalId,
-      },
-    };
-
-    let result;
-    try {
-      result = await mp.createPixPayout(payoutBody, idempotencyKey);
-    } catch (e) {
-      console.error('❌ MP PIX payout error:', e.message, e.body);
-      return res.status(400).json({
-        error: 'PIX payout failed',
-        details: e.body || e.message,
-      });
+    if (pixKeyType === 'email' && !/^[^@]+@[^@]+\.[^@]+$/.test(cleanKey)) {
+      return res.status(400).json({ error: 'Email invalide' });
+    }
+    if (pixKeyType === 'phone' && !/^\+?\d{10,14}$/.test(cleanKey.replace(/\D/g, ''))) {
+      return res.status(400).json({ error: 'Téléphone invalide' });
     }
 
-    await db().collection('mp_payouts').doc(idempotencyKey).set({
-      payoutId: result.id || idempotencyKey,
-      userId,
-      withdrawalId,
-      amount: Number(amount),
-      currency,
-      pixKey,
-      pixKeyType,
-      status: result.status || 'pending',
-      response: result,
+    const payoutId = withdrawalId || `pix_${userId}_${Date.now()}`;
+
+    // Enregistrer la demande pour traitement manuel
+    await db().collection('mp_payouts').doc(payoutId).set({
+      payoutId, userId, withdrawalId,
+      amount: Number(amount), currency,
+      pixKey: cleanKey, pixKeyType,
+      recipientName: recipientName || '',
+      recipientEmail: recipientEmail || '',
+      status: 'pending_manual_review',
+      processingType: 'manual_admin',
+      requiresAdminAction: true,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
+    // Notification admin (à compléter selon votre setup : email, Slack, etc.)
+    await db().collection('admin_notifications').add({
+      type: 'pix_payout_pending',
+      userId, withdrawalId, payoutId,
+      amount: Number(amount), currency,
+      pixKey: cleanKey, pixKeyType,
+      recipientName,
+      message: `Nouvelle demande PIX : ${amount} ${currency} vers ${pixKeyType} ${cleanKey}`,
+      read: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // ✅ On retourne success=true car la demande est correctement enregistrée
+    // Le statut final dépend du traitement admin manuel
     res.json({
       success: true,
-      payoutId: result.id || idempotencyKey,
-      status: result.status || 'pending',
+      payoutId,
+      status: 'pending',
+      message: 'Demande PIX enregistrée, traitement sous 24h ouvrées',
     });
   } catch (e) {
     console.error('❌ MP payout-pix:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================
+// 👨‍💼 ADMIN : Marquer un payout PIX comme complété
+// (Appelé depuis ton interface admin après transfert manuel)
+// ============================================
+router.post('/api/mercadopago/admin/complete-pix-payout', async (req, res) => {
+  try {
+    const { payoutId, adminKey, transactionRef } = req.body;
+
+    if (adminKey !== process.env.ADMIN_API_KEY) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const payoutDoc = await db().collection('mp_payouts').doc(payoutId).get();
+    if (!payoutDoc.exists) return res.status(404).json({ error: 'Payout introuvable' });
+
+    const payout = payoutDoc.data();
+
+    await db().collection('mp_payouts').doc(payoutId).update({
+      status: 'completed',
+      transactionRef: transactionRef || null,
+      completedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    if (payout.withdrawalId) {
+      await db().collection('withdrawals').doc(payout.withdrawalId).update({
+        status: 'completed',
+        mpPayoutId: payoutId,
+        completedDate: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('❌ admin complete-pix-payout:', e);
     res.status(500).json({ error: e.message });
   }
 });
