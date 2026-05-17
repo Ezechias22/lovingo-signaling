@@ -24,10 +24,71 @@ const COIN_PACKAGES = {
   vip: { id: 'vip', name: 'VIP Coins', coins: 275000, usd: 55, currency: 'usd' },
 };
 
+// ✅ Devises supportées (élargi : Europe, Amériques, Asie, Moyen-Orient, Afrique, Océanie)
 const CHECKOUT_CURRENCIES = {
-  brl: { label: 'BRL', rateFromUsd: 5.10 },
+  // Référence
   usd: { label: 'USD', rateFromUsd: 1 },
+
+  // Europe
   eur: { label: 'EUR', rateFromUsd: 0.92 },
+  gbp: { label: 'GBP', rateFromUsd: 0.79 },
+  chf: { label: 'CHF', rateFromUsd: 0.88 },
+  sek: { label: 'SEK', rateFromUsd: 10.50 },
+  nok: { label: 'NOK', rateFromUsd: 10.70 },
+  dkk: { label: 'DKK', rateFromUsd: 6.85 },
+  pln: { label: 'PLN', rateFromUsd: 4.00 },
+  czk: { label: 'CZK', rateFromUsd: 23.00 },
+  huf: { label: 'HUF', rateFromUsd: 360 },
+  ron: { label: 'RON', rateFromUsd: 4.60 },
+  bgn: { label: 'BGN', rateFromUsd: 1.80 },
+  try: { label: 'TRY', rateFromUsd: 34.00 },
+
+  // Amériques
+  cad: { label: 'CAD', rateFromUsd: 1.36 },
+  mxn: { label: 'MXN', rateFromUsd: 17.50 },
+  brl: { label: 'BRL', rateFromUsd: 5.10 },
+  ars: { label: 'ARS', rateFromUsd: 1000 },
+  clp: { label: 'CLP', rateFromUsd: 950 },
+  cop: { label: 'COP', rateFromUsd: 4100 },
+  pen: { label: 'PEN', rateFromUsd: 3.75 },
+  uyu: { label: 'UYU', rateFromUsd: 40 },
+
+  // Asie / Pacifique
+  jpy: { label: 'JPY', rateFromUsd: 150 },
+  cny: { label: 'CNY', rateFromUsd: 7.20 },
+  krw: { label: 'KRW', rateFromUsd: 1380 },
+  inr: { label: 'INR', rateFromUsd: 83 },
+  aud: { label: 'AUD', rateFromUsd: 1.52 },
+  nzd: { label: 'NZD', rateFromUsd: 1.65 },
+  sgd: { label: 'SGD', rateFromUsd: 1.35 },
+  hkd: { label: 'HKD', rateFromUsd: 7.80 },
+  twd: { label: 'TWD', rateFromUsd: 32 },
+  thb: { label: 'THB', rateFromUsd: 36 },
+  myr: { label: 'MYR', rateFromUsd: 4.70 },
+  idr: { label: 'IDR', rateFromUsd: 15800 },
+  php: { label: 'PHP', rateFromUsd: 58 },
+  vnd: { label: 'VND', rateFromUsd: 25000 },
+  bdt: { label: 'BDT', rateFromUsd: 110 },
+  pkr: { label: 'PKR', rateFromUsd: 280 },
+  lkr: { label: 'LKR', rateFromUsd: 300 },
+
+  // Moyen-Orient
+  aed: { label: 'AED', rateFromUsd: 3.67 },
+  sar: { label: 'SAR', rateFromUsd: 3.75 },
+  qar: { label: 'QAR', rateFromUsd: 3.64 },
+  kwd: { label: 'KWD', rateFromUsd: 0.31 },
+  bhd: { label: 'BHD', rateFromUsd: 0.38 },
+  omr: { label: 'OMR', rateFromUsd: 0.38 },
+  ils: { label: 'ILS', rateFromUsd: 3.70 },
+
+  // Afrique
+  egp: { label: 'EGP', rateFromUsd: 48 },
+  zar: { label: 'ZAR', rateFromUsd: 18 },
+  ngn: { label: 'NGN', rateFromUsd: 1500 },
+  kes: { label: 'KES', rateFromUsd: 130 },
+  ghs: { label: 'GHS', rateFromUsd: 15 },
+  mad: { label: 'MAD', rateFromUsd: 10 },
+  tnd: { label: 'TND', rateFromUsd: 3.10 },
 };
 
 const ZERO_DECIMAL_CURRENCIES = new Set([
@@ -359,9 +420,12 @@ router.post('/api/create-payment-intent', async (req, res) => {
       return res.status(400).json({ error: 'Montant invalide' });
     }
 
+    // ✅ Normaliser et valider la devise envoyée par l'app
+    const checkoutCurrency = normalizeCheckoutCurrency(currency);
+
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(Number(amount)),
-      currency: String(currency).toLowerCase(),
+      currency: checkoutCurrency,
       metadata: {
         app: 'lovingo',
         type: metadata.type || 'wallet_recharge',
@@ -511,9 +575,17 @@ router.post('/api/create-manual-app-coin-payment-intent', async (req, res) => {
   }
 });
 
+// ✅ Route corrigée : utilise maintenant la devise locale envoyée par l'app
 router.post('/api/create-coin-payment-intent', async (req, res) => {
   try {
-    const { userId, publicId, packageId, source = 'app' } = req.body;
+    const {
+      userId,
+      publicId,
+      packageId,
+      source = 'app',
+      currency = 'usd', // ✅ NOUVEAU : devise lue depuis le body
+    } = req.body;
+
     const selectedPackage = COIN_PACKAGES[packageId];
 
     if (!selectedPackage) {
@@ -539,6 +611,13 @@ router.post('/api/create-coin-payment-intent', async (req, res) => {
     if (!targetUserId) {
       return res.status(400).json({ error: 'userId ou publicId requis' });
     }
+
+    // ✅ NOUVEAU : conversion USD -> devise locale de l'utilisateur
+    const checkoutCurrency = normalizeCheckoutCurrency(currency);
+    const checkoutAmount = convertUsdToCheckoutAmount(
+      selectedPackage.usd,
+      checkoutCurrency
+    );
 
     await ensureWalletExists(targetUserId);
 
@@ -576,8 +655,9 @@ router.post('/api/create-coin-payment-intent', async (req, res) => {
     }
 
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(selectedPackage.usd * 100),
-      currency: selectedPackage.currency,
+      // ✅ Montant et devise locale (au lieu du USD hardcodé)
+      amount: checkoutAmount,
+      currency: checkoutCurrency,
       metadata: {
         app: 'lovingo',
         type: 'coin_purchase',
@@ -590,6 +670,8 @@ router.post('/api/create-coin-payment-intent', async (req, res) => {
         usd: String(selectedPackage.usd),
         coinsPerUsd: String(COINS_PER_USD),
         riskScore: String(risk.score),
+        checkoutCurrency,
+        checkoutAmount: String(checkoutAmount),
         createdAt: new Date().toISOString(),
       },
       automatic_payment_methods: { enabled: true },
@@ -609,6 +691,8 @@ router.post('/api/create-coin-payment-intent', async (req, res) => {
       clientSecret: paymentIntent.client_secret,
       paymentIntentId: paymentIntent.id,
       package: selectedPackage,
+      currency: checkoutCurrency,
+      amount: checkoutAmount,
       riskScore: risk.score,
       rate: {
         coinsPerUsd: COINS_PER_USD,
@@ -626,7 +710,7 @@ router.post('/api/create-coin-payment-intent', async (req, res) => {
 
 router.post('/api/purchase-credits', async (req, res) => {
   try {
-    const { userId, creditPackage } = req.body;
+    const { userId, creditPackage, currency = 'usd' } = req.body;
 
     const oldToNewPackageMap = {
       small: 'starter',
@@ -655,6 +739,7 @@ router.post('/api/purchase-credits', async (req, res) => {
         body: {
           userId,
           packageId,
+          currency, // ✅ on propage la devise
           source: 'legacy_purchase_credits',
         },
       }),
@@ -1026,3 +1111,4 @@ module.exports.COIN_PACKAGES = COIN_PACKAGES;
 module.exports.COINS_PER_USD = COINS_PER_USD;
 module.exports.APP_COINS_PRICE_MULTIPLIER = APP_COINS_PRICE_MULTIPLIER;
 module.exports.MIN_MANUAL_COINS_PURCHASE = MIN_MANUAL_COINS_PURCHASE;
+module.exports.MAX_MANUAL_COINS_PURCHASE = MAX_MANUAL_COINS_PURCHASE;
